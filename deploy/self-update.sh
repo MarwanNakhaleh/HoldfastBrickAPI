@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# PrivacyBrick self-updater. Launched DETACHED by the API (POST
+# Holdfast Brick self-updater. Launched DETACHED by the API (POST
 # /api/v1/system/update) as a transient systemd unit:
-#   systemd-run --unit=privacybrick-update --collect /bin/bash self-update.sh <repo_dir>
-# Detached because install.sh restarts privacybrick-api, which would kill an
+#   systemd-run --unit=holdfastbrick-update --collect /bin/bash self-update.sh <repo_dir>
+# Detached because install.sh restarts holdfastbrick-api, which would kill an
 # updater running inside the API process.
 set -euo pipefail
 

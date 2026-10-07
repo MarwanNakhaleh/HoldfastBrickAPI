@@ -1,7 +1,7 @@
 """AdGuard Home — proxied via its local REST API (http://127.0.0.1:3000).
 
 Presented to the app as "Ad Blocking". The API credentials are the AdGuard
-Home admin credentials, configured in /etc/privacybrick/.env at install time;
+Home admin credentials, configured in /etc/holdfastbrick/.env at install time;
 the phone never sees them.
 """
 
@@ -28,9 +28,9 @@ def _client() -> httpx.AsyncClient:
 
 
 _CREDENTIALS_HINT = (
-    "Set PRIVACYBRICK_ADGUARD_USERNAME and PRIVACYBRICK_ADGUARD_PASSWORD in "
-    "/etc/privacybrick/.env on the device (the AdGuard Home admin login), "
-    "then run 'sudo systemctl restart privacybrick-api'."
+    "Set HOLDFASTBRICK_ADGUARD_USERNAME and HOLDFASTBRICK_ADGUARD_PASSWORD in "
+    "/etc/holdfastbrick/.env on the device (the AdGuard Home admin login), "
+    "then run 'sudo systemctl restart holdfastbrick-api'."
 )
 
 
@@ -67,7 +67,7 @@ async def health() -> ServiceHealth:
             # Installed and answering — it just needs credentials.
             return ServiceHealth(
                 id="adguard", name="Ad Blocking", running=False,
-                detail="needs AdGuard admin credentials in /etc/privacybrick/.env",
+                detail="needs AdGuard admin credentials in /etc/holdfastbrick/.env",
             )
         return ServiceHealth(id="adguard", name="Ad Blocking", running=False, installed=False, detail=str(exc))
     except httpx.HTTPError as exc:

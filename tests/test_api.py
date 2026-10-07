@@ -8,15 +8,15 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRIVACYBRICK_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("PRIVACYBRICK_MDNS_ENABLED", "false")
+    monkeypatch.setenv("HOLDFASTBRICK_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HOLDFASTBRICK_MDNS_ENABLED", "false")
     # Re-import with a clean state dir.
     import importlib
 
-    from privacybrick_api import config
+    from holdfastbrick_api import config
 
     importlib.reload(config)
-    from privacybrick_api import auth, main
+    from holdfastbrick_api import auth, main
 
     importlib.reload(auth)
     importlib.reload(main)
@@ -36,7 +36,7 @@ def test_ping_is_unauthenticated(client):
     test_client, _ = client
     resp = test_client.get("/api/v1/ping")
     assert resp.status_code == 200
-    assert resp.json()["app"] == "privacybrick"
+    assert resp.json()["app"] == "holdfastbrick"
 
 
 def test_overview_requires_token(client):
@@ -141,7 +141,7 @@ def test_adguard_auth_failure_maps_to_actionable_502():
     """A 401/403 from AdGuard is a credentials problem, not 'unreachable'."""
     import httpx
 
-    from privacybrick_api.services import adguard
+    from holdfastbrick_api.services import adguard
 
     request = httpx.Request("GET", "http://127.0.0.1:3000/control/stats")
     auth_exc = httpx.HTTPStatusError(
@@ -149,7 +149,7 @@ def test_adguard_auth_failure_maps_to_actionable_502():
     )
     err = adguard._proxy_error(auth_exc)
     assert err.status_code == 502
-    assert "/etc/privacybrick/.env" in err.detail
+    assert "/etc/holdfastbrick/.env" in err.detail
     assert "unreachable" not in err.detail.lower()
 
     transport_exc = httpx.ConnectError("connection refused", request=request)

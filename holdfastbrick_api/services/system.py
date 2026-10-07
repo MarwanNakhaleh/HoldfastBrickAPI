@@ -247,7 +247,7 @@ async def get_router() -> dict:
 async def start_update() -> ActionResponse:
     """Pull the latest code and re-run the installer.
 
-    Launched DETACHED via systemd-run: install.sh restarts privacybrick-api,
+    Launched DETACHED via systemd-run: install.sh restarts holdfastbrick-api,
     which would kill an updater running inside this process halfway through.
     A transient systemd unit survives the restart and --collect cleans it up.
     """
@@ -255,7 +255,7 @@ async def start_update() -> ActionResponse:
         raise HTTPException(
             status_code=422,
             detail=(
-                "PRIVACYBRICK_REPO_DIR isn't configured. Re-run deploy/install.sh "
+                "HOLDFASTBRICK_REPO_DIR isn't configured. Re-run deploy/install.sh "
                 "on the device once to record where the repo lives."
             ),
         )
@@ -263,7 +263,7 @@ async def start_update() -> ActionResponse:
         result = await run(
             [
                 "systemd-run",
-                "--unit=privacybrick-update",
+                "--unit=holdfastbrick-update",
                 "--collect",
                 "/bin/bash",
                 f"{settings.repo_dir}/deploy/self-update.sh",
@@ -282,13 +282,13 @@ async def start_update() -> ActionResponse:
 
 @router.get("/update/status")
 async def update_status() -> dict:
-    """Whether the transient privacybrick-update unit is still running.
+    """Whether the transient holdfastbrick-update unit is still running.
 
     An unknown/inactive unit means "not running", not an error — after
     --collect the unit vanishes entirely once it finishes.
     """
     try:
-        status = await systemd_status("privacybrick-update")
+        status = await systemd_status("holdfastbrick-update")
         return {"running": bool(status["running"])}
     except CommandError:
         return {"running": False}
@@ -401,7 +401,7 @@ async def install_ssh_key(body: SshKeyRequest, request: Request) -> ActionRespon
         if content is not None:
             # tmp + rename: an interrupted write must never truncate
             # previously authorized keys (root lockout on SD-card power loss).
-            tmp = AUTHORIZED_KEYS_FILE.with_name("authorized_keys.privacybrick-tmp")
+            tmp = AUTHORIZED_KEYS_FILE.with_name("authorized_keys.holdfastbrick-tmp")
             tmp.write_text(content)
             tmp.chmod(0o600)
             tmp.replace(AUTHORIZED_KEYS_FILE)

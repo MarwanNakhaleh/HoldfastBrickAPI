@@ -6,8 +6,8 @@ import base64
 
 import pytest
 
-from privacybrick_api.runner import CommandResult
-from privacybrick_api.services import system
+from holdfastbrick_api.runner import CommandResult
+from holdfastbrick_api.services import system
 
 # --- /proc/net/route parsing --------------------------------------------------
 
@@ -127,12 +127,12 @@ def test_update_422_without_repo_dir(authed, monkeypatch):
     monkeypatch.setattr(system.settings, "repo_dir", "")
     resp = test_client.post("/api/v1/system/update", headers=headers)
     assert resp.status_code == 422
-    assert "PRIVACYBRICK_REPO_DIR" in resp.json()["detail"]
+    assert "HOLDFASTBRICK_REPO_DIR" in resp.json()["detail"]
 
 
 def test_update_launches_detached_systemd_run(authed, monkeypatch):
     test_client, headers = authed
-    monkeypatch.setattr(system.settings, "repo_dir", "/opt/src/PrivacyBrickAPI")
+    monkeypatch.setattr(system.settings, "repo_dir", "/opt/src/HoldfastBrickAPI")
     calls = []
 
     async def fake_run(argv, timeout=20.0):
@@ -146,11 +146,11 @@ def test_update_launches_detached_systemd_run(authed, monkeypatch):
     assert calls == [
         [
             "systemd-run",
-            "--unit=privacybrick-update",
+            "--unit=holdfastbrick-update",
             "--collect",
             "/bin/bash",
-            "/opt/src/PrivacyBrickAPI/deploy/self-update.sh",
-            "/opt/src/PrivacyBrickAPI",
+            "/opt/src/HoldfastBrickAPI/deploy/self-update.sh",
+            "/opt/src/HoldfastBrickAPI",
         ]
     ]
 

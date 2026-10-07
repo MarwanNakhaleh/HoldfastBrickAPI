@@ -1,9 +1,9 @@
-"""Configuration for the PrivacyBrick API.
+"""Configuration for the Holdfast API.
 
 Everything is overridable via environment variables prefixed with
-``PRIVACYBRICK_`` (e.g. ``PRIVACYBRICK_PORT=8787``) or a ``.env`` file next to
+``HOLDFASTBRICK_`` (e.g. ``HOLDFASTBRICK_PORT=8787``) or a ``.env`` file next to
 the working directory. Secrets (API tokens, pairing state) live in a small
-JSON state file under ``/etc/privacybrick`` by default.
+JSON state file under ``/etc/holdfastbrick`` by default.
 """
 
 from __future__ import annotations
@@ -16,22 +16,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PRIVACYBRICK_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="HOLDFASTBRICK_", env_file=".env")
 
     # Server
     host: str = "0.0.0.0"
     port: int = 8787
-    device_name: str = "PrivacyBrick"
+    device_name: str = "Holdfast Brick"
 
     # Where persistent state (issued tokens, pairing secret) is stored.
-    state_dir: Path = Path("/etc/privacybrick")
+    state_dir: Path = Path("/etc/holdfastbrick")
 
-    # How long a pairing window stays open after `privacybrick pair` (seconds).
+    # How long a pairing window stays open after `holdfastbrick-pair` (seconds).
     pairing_window_seconds: int = 300
 
     # mDNS / Bonjour advertisement
     mdns_enabled: bool = True
-    mdns_service_type: str = "_privacybrick._tcp.local."
+    mdns_service_type: str = "_holdfastbrick._tcp.local."
 
     # --- Downstream services -------------------------------------------------
     # AdGuard Home local web/API address and credentials.
@@ -69,7 +69,7 @@ settings = Settings()
 class StateStore:
     """Tiny JSON-file-backed store for tokens and pairing state.
 
-    The API service and the ``privacybrick-pair`` CLI are separate
+    The API service and the ``holdfastbrick-pair`` CLI are separate
     processes, each with its own instance over the same file — so every
     read re-loads from disk, and writes re-load before mutating. Plain
     file I/O is plenty at this scale (one Pi, a handful of phones).

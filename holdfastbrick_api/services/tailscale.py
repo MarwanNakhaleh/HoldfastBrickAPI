@@ -1,7 +1,7 @@
 """Tailscale — wrapped via the `tailscale` CLI (JSON output).
 
 Presented to the app as "Remote Access": lets the user reach their
-PrivacyBrick (and use its DNS filtering) securely from anywhere.
+Holdfast Brick (and use its DNS filtering) securely from anywhere.
 """
 
 from __future__ import annotations

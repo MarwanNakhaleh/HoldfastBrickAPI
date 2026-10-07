@@ -1,11 +1,11 @@
-# PrivacyBrickAPI
+# HoldfastBrickAPI
 
-The local control-plane API for a **PrivacyBrick** — a Raspberry Pi (DietPi or Raspberry Pi OS)
+The local control-plane API for a **Holdfast Brick** — a Raspberry Pi (DietPi or Raspberry Pi OS)
 plugged into your router that runs Unbound (with DNS-over-TLS), AdGuard Home,
 Tailscale, ntopng, and the NextDNS CLI.
 
 **It runs on the Pi itself. There is no cloud, no centralized server, and no
-account.** The [PrivacyBrick iOS app](https://github.com/MarwanNakhaleh/PrivacyBrickUI-iOS)
+account.** The [Holdfast iOS app](https://github.com/MarwanNakhaleh/HoldfastBrickUI-iOS)
 finds the Pi on your WiFi automatically (Bonjour/mDNS), pairs once with a
 6-digit code, and talks to this API directly. If Tailscale is up, the same API
 is reachable securely from anywhere — still with no central server.
@@ -13,7 +13,7 @@ is reachable securely from anywhere — still with no central server.
 ```
 ┌──────────┐   Bonjour discovery + HTTP (LAN)         ┌─────────────────────┐
 │  iPhone  │ ───────────────────────────────────────▶ │  Raspberry Pi       │
-│  (app)   │   or via Tailscale from anywhere         │  privacybrick-api   │
+│  (app)   │   or via Tailscale from anywhere         │  holdfastbrick-api   │
 └──────────┘                                          │   ├─ unbound-control│
                                                       │   ├─ tailscale CLI  │
                                                       │   ├─ nextdns CLI    │
@@ -26,23 +26,23 @@ is reachable securely from anywhere — still with no central server.
 ## Install (on the Pi)
 
 ```bash
-git clone https://github.com/MarwanNakhaleh/PrivacyBrickAPI.git
-cd PrivacyBrickAPI
+git clone https://github.com/MarwanNakhaleh/HoldfastBrickAPI.git
+cd HoldfastBrickAPI
 sudo bash deploy/install.sh
 ```
 
-The installer creates a venv in `/opt/privacybrick`, installs a systemd
-service (`privacybrick-api`, port **8787**), writes a config template to
-`/etc/privacybrick/.env`, and prints a pairing code.
+The installer creates a venv in `/opt/holdfastbrick`, installs a systemd
+service (`holdfastbrick-api`, port **8787**), writes a config template to
+`/etc/holdfastbrick/.env`, and prints a pairing code.
 
 AdGuard credentials are wired automatically: `deploy/provision.sh` creates a
-dedicated `privacybrick` service account in AdGuard Home and writes it to
-`/etc/privacybrick/.env`. (Installing the API alone with `install.sh`? Add
+dedicated `holdfastbrick` service account in AdGuard Home and writes it to
+`/etc/holdfastbrick/.env`. (Installing the API alone with `install.sh`? Add
 your AdGuard admin login to `.env` yourself — or run `provision.sh`, which
-converges safely on an existing setup. Add `PRIVACYBRICK_NTOPNG_TOKEN` too if
-you use one, then `sudo systemctl restart privacybrick-api`.)
+converges safely on an existing setup. Add `HOLDFASTBRICK_NTOPNG_TOKEN` too if
+you use one, then `sudo systemctl restart holdfastbrick-api`.)
 
-To pair another phone later: `privacybrick-pair`
+To pair another phone later: `holdfastbrick-pair`
 
 ## How each tool is controlled
 
@@ -56,7 +56,7 @@ To pair another phone later: `privacybrick-pair`
 | Network Monitor  | ntopng          | local REST API (`/lua/rest/v2/...`) |
 | Device           | DietPi / OS     | `systemctl`, `vcgencmd`, `free`, `df`, … |
 
-All subprocess calls go through an **allowlist** (`privacybrick_api/runner.py`) —
+All subprocess calls go through an **allowlist** (`holdfastbrick_api/runner.py`) —
 the API can only run the specific binaries above, argv-style with no shell.
 
 ## API surface (all under `/api/v1`)
@@ -81,8 +81,8 @@ Interactive docs at `http://<pi>:8787/docs` while developing.
 ## Security model
 
 - **Pairing**: single-use, 5-minute, 6-digit codes generated on the device
-  (`privacybrick-pair`). Successful pairing issues a long-lived token stored
-  in the phone's Keychain. Tokens live in `/etc/privacybrick/state.json` (0600).
+  (`holdfastbrick-pair`). Successful pairing issues a long-lived token stored
+  in the phone's Keychain. Tokens live in `/etc/holdfastbrick/state.json` (0600).
 - **No inbound cloud dependency**: the API binds to the LAN; remote access is
   only via your own tailnet.
 - **Command allowlist**: no shell execution, fixed binary set, hard timeouts.
@@ -94,7 +94,7 @@ Interactive docs at `http://<pi>:8787/docs` while developing.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-PRIVACYBRICK_STATE_DIR=./tmp-state privacybrick-api   # http://localhost:8787/docs
+HOLDFASTBRICK_STATE_DIR=./tmp-state holdfastbrick-api   # http://localhost:8787/docs
 pytest                                                 # smoke tests, no Pi needed
 ```
 

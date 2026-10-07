@@ -1,7 +1,7 @@
-"""PrivacyBrick API entry point.
+"""Holdfast API entry point.
 
-Runs on the Pi itself (see deploy/privacybrick-api.service). The iOS app
-discovers it via Bonjour (_privacybrick._tcp), pairs once with a 6-digit
+Runs on the Pi itself (see deploy/holdfastbrick-api.service). The iOS app
+discovers it via Bonjour (_holdfastbrick._tcp), pairs once with a 6-digit
 code, then talks to it directly over the LAN — or from anywhere via
 Tailscale. There is no cloud component.
 """
@@ -59,9 +59,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="PrivacyBrick API",
+    title="Holdfast API",
     version=__version__,
-    description="Local control plane for a PrivacyBrick (Raspberry Pi DNS privacy appliance).",
+    description="Local control plane for a Holdfast Brick (Raspberry Pi DNS privacy appliance).",
     lifespan=lifespan,
 )
 
@@ -82,7 +82,7 @@ for service_router in (
 @app.get(f"{API}/ping")
 async def ping() -> dict:
     """Unauthenticated liveness + identity check, used during discovery."""
-    return {"app": "privacybrick", "version": __version__, "device_name": settings.device_name}
+    return {"app": "holdfastbrick", "version": __version__, "device_name": settings.device_name}
 
 
 @app.post(f"{API}/pair", response_model=PairResponse)
@@ -91,7 +91,7 @@ async def pair(body: PairRequest) -> PairResponse:
     if token is None:
         raise HTTPException(
             status_code=403,
-            detail="Wrong or expired code. Run 'privacybrick-pair' on the device for a new one.",
+            detail="Wrong or expired code. Run 'holdfastbrick-pair' on the device for a new one.",
         )
     return PairResponse(token=token, device_name=settings.device_name)
 

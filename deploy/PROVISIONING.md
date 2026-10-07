@@ -1,7 +1,7 @@
-# Provisioning a PrivacyBrick from scratch
+# Provisioning a Holdfast Brick from scratch
 
 `deploy/provision.sh` turns a **fresh DietPi or Raspberry Pi OS** device
-(Debian bookworm or newer, arm64/armhf) into a complete PrivacyBrick. Run it
+(Debian bookworm or newer, arm64/armhf) into a complete Holdfast Brick. Run it
 as root from a clone of this repo:
 
 ```bash
@@ -22,7 +22,7 @@ config file it would change is backed up first as `<file>.bak.<epoch>`.
 | Tailscale | Tailscale apt repo (`pkgs.tailscale.com/stable/debian`, bookworm) |
 | ntopng | ntop apt repo (`packages.ntop.org`) if reachable, else Debian apt |
 | NextDNS CLI | official installer (`nextdns.io/install`) |
-| PrivacyBrick API | this repo, via `deploy/install.sh` (invoked at the end) |
+| Holdfast API | this repo, via `deploy/install.sh` (invoked at the end) |
 
 It also disables `systemd-resolved`'s stub listener if present (to free
 port 53) and runs `unbound-control-setup` (the API drives Unbound through
@@ -66,7 +66,7 @@ flag or environment variable (flag wins):
 | 5054 | NextDNS CLI | 127.0.0.1 | `--nextdns-port` / `NEXTDNS_PORT` | alternative upstream, standby only |
 | 3000 | AdGuard Home | 0.0.0.0 | `--adguard-ui-port` / `ADGUARD_UI_PORT` | web UI / REST API |
 | 3001 | ntopng | 0.0.0.0 | `--ntopng-port` / `NTOPNG_PORT` | web UI / REST API |
-| 8787 | PrivacyBrick API | 0.0.0.0 | `--api-port` / `API_PORT` | control-plane API for the iOS app |
+| 8787 | Holdfast API | 0.0.0.0 | `--api-port` / `API_PORT` | control-plane API for the iOS app |
 
 ```bash
 # Example: AdGuard UI on 6969, DNS on 54
@@ -78,7 +78,7 @@ Two behaviors worth knowing:
 - **Existing AdGuard settings are detected and adopted.** On a re-run, the
   script reads `AdGuardHome.yaml` and, unless you explicitly passed AdGuard
   port flags, keeps whatever ports the wizard/you already configured — and
-  syncs the API's `/etc/privacybrick/.env` to match. Explicit flags win and
+  syncs the API's `/etc/holdfastbrick/.env` to match. Explicit flags win and
   re-patch the config.
 - **DNS on a port other than 53 has a catch**: DHCP can only hand out a DNS
   *address* — there is no port field — so LAN devices won't use a nonstandard
@@ -108,12 +108,12 @@ restarted.
    port **3000** and DNS port **53**, and create admin credentials. Then
    **re-run `provision.sh`**: it detects the now-existing
    `AdGuardHome.yaml`, patches the upstream to Unbound (`127.0.0.1:5335`),
-   and creates a dedicated `privacybrick` AdGuard service account with a
-   random password for the API (written to `/etc/privacybrick/.env`) — no
+   and creates a dedicated `holdfastbrick` AdGuard service account with a
+   random password for the API (written to `/etc/holdfastbrick/.env`) — no
    manual credential wiring needed. Your own admin login is untouched.
 2. **ntopng token** *(optional)* — if you create one, put it in
-   `/etc/privacybrick/.env` (`PRIVACYBRICK_NTOPNG_TOKEN`), then
-   `sudo systemctl restart privacybrick-api`.
+   `/etc/holdfastbrick/.env` (`HOLDFASTBRICK_NTOPNG_TOKEN`), then
+   `sudo systemctl restart holdfastbrick-api`.
 3. **Tailscale login** — if the script printed an auth URL you didn't visit,
    run `sudo tailscale up` and follow the link.
 4. **Router** — point your router's DHCP DNS at the Pi's LAN IP so every
@@ -152,11 +152,11 @@ curl -s http://127.0.0.1:3001/ -o /dev/null -w 'ntopng ui:  %{http_code}\n'
 curl -s http://127.0.0.1:8787/api/v1/ping
 
 # 5. Services at a glance
-systemctl --no-pager status unbound AdGuardHome ntopng nextdns tailscaled privacybrick-api
+systemctl --no-pager status unbound AdGuardHome ntopng nextdns tailscaled holdfastbrick-api
 sudo unbound-control status                 # the API uses this same channel
 tailscale status
 ```
 
 If a link fails, check its logs: `journalctl -u <unit> -e` (units: `unbound`,
-`AdGuardHome`, `ntopng`, `nextdns`, `tailscaled`, `privacybrick-api`) — or
-`privacybrick-logs <service>`.
+`AdGuardHome`, `ntopng`, `nextdns`, `tailscaled`, `holdfastbrick-api`) — or
+`holdfastbrick-logs <service>`.

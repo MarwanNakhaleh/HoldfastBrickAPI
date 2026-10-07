@@ -1,6 +1,6 @@
 """AdGuard Home DHCP takeover — proxied via its local REST API.
 
-Lets the app move DHCP duty from the user's router onto the PrivacyBrick, so
+Lets the app move DHCP duty from the user's router onto the Holdfast Brick, so
 every device on the LAN automatically gets the Pi as its DNS server. The flow
 is: check (is the router's DHCP still on? is the Pi's own IP static?), then
 enable (pin the Pi's IP if needed, pick a lease range, turn AdGuard DHCP on),
@@ -32,7 +32,7 @@ from .system import read_default_route
 router = APIRouter(prefix="/dhcp", tags=["dhcp"], dependencies=[Depends(require_token)])
 
 INTERFACES_FILE = Path("/etc/network/interfaces")
-INTERFACES_BACKUP = Path("/etc/network/interfaces.privacybrick-bak")
+INTERFACES_BACKUP = Path("/etc/network/interfaces.holdfastbrick-bak")
 LEASE_DURATION_SECONDS = 86400
 SIOCGIFNETMASK = 0x891B  # Linux ioctl: get interface netmask
 
@@ -83,7 +83,7 @@ def pick_dhcp_range(
     raise ValueError(f"no free DHCP range in {network} avoiding the Pi and gateway")
 
 
-PIN_MARKER = "# pinned by PrivacyBrick (dhcp/enable)"
+PIN_MARKER = "# pinned by Holdfast (dhcp/enable)"
 
 
 def interfaces_static_state(content: str, iface: str) -> str:
@@ -135,7 +135,7 @@ def rewrite_interfaces_static(
 def _write_atomic(path: Path, content: str) -> None:
     """tmp + rename, same pattern as StateStore._save — an interrupted write
     must never leave a truncated network config on this SD-card device."""
-    tmp = path.with_name(path.name + ".privacybrick-tmp")
+    tmp = path.with_name(path.name + ".holdfastbrick-tmp")
     tmp.write_text(content)
     tmp.replace(path)
 
@@ -376,7 +376,7 @@ async def enable(body: EnableRequest | None = None) -> dict:
             ) from exc
         raise _proxy_error(exc) from exc
 
-    message = f"PrivacyBrick is now handing out addresses {range_start}–{range_end}."
+    message = f"Holdfast Brick is now handing out addresses {range_start}–{range_end}."
     if needs_reboot:
         message += " The Pi's IP was pinned static — reboot it to finish."
     return {"ok": True, "message": message, "needs_reboot": needs_reboot}
@@ -412,5 +412,5 @@ async def disable() -> ActionResponse:
         raise _proxy_error(exc) from exc
     return ActionResponse(
         ok=True,
-        message="PrivacyBrick's DHCP server is off. Turn your router's DHCP back on.",
+        message="Holdfast Brick's DHCP server is off. Turn your router's DHCP back on.",
     )

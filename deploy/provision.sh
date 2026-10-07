@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PrivacyBrick full-stack provisioner for a fresh DietPi or Raspberry Pi OS
+# Holdfast Brick full-stack provisioner for a fresh DietPi or Raspberry Pi OS
 # device (Debian bookworm or newer, arm64/armhf).
 #
 # Installs and wires: Unbound (DNS-over-TLS upstream), AdGuard Home, Tailscale,
-# ntopng, NextDNS CLI — then installs the PrivacyBrick API via deploy/install.sh.
+# ntopng, NextDNS CLI — then installs the Holdfast API via deploy/install.sh.
 #
 # Resulting DNS chain (default, "forward" mode):
 #   LAN clients :53 -> AdGuard Home -> 127.0.0.1:5335 Unbound -> DoT (Cloudflare/Quad9 :853)
@@ -19,7 +19,7 @@
 #   --unbound-port N       (default 5335, env UNBOUND_PORT)      localhost only
 #   --nextdns-port N       (default 5054, env NEXTDNS_PORT)      localhost only
 #   --ntopng-port N        (default 3001, env NTOPNG_PORT)       ntopng web/REST UI
-#   --api-port N           (default 8787, env API_PORT)          PrivacyBrick API
+#   --api-port N           (default 8787, env API_PORT)          Holdfast API
 #   e.g.  sudo bash deploy/provision.sh --adguard-ui-port 6969 --adguard-dns-port 54
 #
 # Safe to re-run: every step is idempotent. Config files that already exist
@@ -43,7 +43,7 @@ ADGUARD_UI_PORT="${ADGUARD_UI_PORT:-3000}"      # AdGuard Home web UI
 UNBOUND_PORT="${UNBOUND_PORT:-5335}"            # Unbound, localhost only
 NEXTDNS_PORT="${NEXTDNS_PORT:-5054}"            # NextDNS CLI (installed, NOT in chain)
 NTOPNG_PORT="${NTOPNG_PORT:-3001}"              # ntopng web/REST UI
-API_PORT="${API_PORT:-8787}"                    # PrivacyBrick API
+API_PORT="${API_PORT:-8787}"                    # Holdfast API
 
 RECURSIVE=0
 while [ $# -gt 0 ]; do
@@ -190,8 +190,8 @@ stage "Stage 1/8: Free port 53 (systemd-resolved stub listener, if present)"
 if systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 \
    && systemctl is-enabled systemd-resolved >/dev/null 2>&1; then
   mkdir -p /etc/systemd/resolved.conf.d
-  write_config /etc/systemd/resolved.conf.d/99-privacybrick.conf <<'EOF'
-# Installed by PrivacyBrick provision.sh — frees port 53 for AdGuard Home.
+  write_config /etc/systemd/resolved.conf.d/99-holdfastbrick.conf <<'EOF'
+# Installed by Holdfast provision.sh — frees port 53 for AdGuard Home.
 [Resolve]
 DNSStubListener=no
 EOF
@@ -210,7 +210,7 @@ else
   apt-get install -y -qq unbound
 fi
 
-# unbound-control is used by the PrivacyBrick API — make sure its keys exist.
+# unbound-control is used by the Holdfast API — make sure its keys exist.
 if [ ! -f /etc/unbound/unbound_control.key ]; then
   unbound-control-setup -d /etc/unbound
   note "unbound-control keys generated (unbound-control-setup)."
@@ -220,8 +220,8 @@ fi
 
 if [ "$RECURSIVE" -eq 1 ]; then
   note "--recursive: Unbound will do full recursion itself (no DoT forward zone)."
-  write_config /etc/unbound/unbound.conf.d/privacybrick.conf <<EOF
-# Installed by PrivacyBrick provision.sh (--recursive mode).
+  write_config /etc/unbound/unbound.conf.d/holdfastbrick.conf <<EOF
+# Installed by Holdfast provision.sh (--recursive mode).
 # Unbound performs full recursion from the root servers, validating DNSSEC
 # via the auto-managed trust anchor (Debian ships
 # unbound.conf.d/root-auto-trust-anchor-file.conf pointing at
@@ -248,8 +248,8 @@ remote-control:
     control-interface: 127.0.0.1
 EOF
 else
-  write_config /etc/unbound/unbound.conf.d/privacybrick.conf <<EOF
-# Installed by PrivacyBrick provision.sh (forward mode).
+  write_config /etc/unbound/unbound.conf.d/holdfastbrick.conf <<EOF
+# Installed by Holdfast provision.sh (forward mode).
 # Unbound forwards everything over DNS-over-TLS directly to Cloudflare and
 # Quad9 (native forward-tls-upstream — no separate DoH daemon; cloudflared's
 # proxy-dns mode was discontinued upstream in Nov 2025), adding a local
@@ -297,14 +297,14 @@ stage "Stage 3/8: Encrypted DNS — Unbound DoT (remove legacy cloudflared, if a
 # versions of this script installed here — was discontinued upstream in
 # Nov 2025, so any leftover install from a previous run is retired.
 if [ -f /etc/systemd/system/cloudflared.service ] \
-   && grep -q "PrivacyBrick provision.sh" /etc/systemd/system/cloudflared.service; then
+   && grep -qE "(Privacy|Holdfast)Brick provision.sh" /etc/systemd/system/cloudflared.service; then
   systemctl disable --now cloudflared >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/cloudflared.service /etc/default/cloudflared \
         /etc/apt/sources.list.d/cloudflared.list
   systemctl daemon-reload
-  note "Legacy PrivacyBrick cloudflared unit removed (proxy-dns discontinued upstream)."
+  note "Legacy Holdfast cloudflared unit removed (proxy-dns discontinued upstream)."
 else
-  note "No legacy PrivacyBrick cloudflared unit — nothing to clean up."
+  note "No legacy Holdfast cloudflared unit — nothing to clean up."
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,7 +495,7 @@ fi
 
 mkdir -p /etc/ntopng
 write_config /etc/ntopng/ntopng.conf <<EOF
-# Installed by PrivacyBrick provision.sh.
+# Installed by Holdfast provision.sh.
 # Web/REST UI on ${NTOPNG_PORT} (AdGuard Home owns 3000), monitoring ${DEFAULT_IFACE}.
 -w=${NTOPNG_PORT}
 -i=${DEFAULT_IFACE}
@@ -577,24 +577,24 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 8/8: PrivacyBrick API (deploy/install.sh)"
+stage "Stage 8/8: Holdfast API (deploy/install.sh)"
 # ─────────────────────────────────────────────────────────────────────────────
 bash "${REPO_DIR}/deploy/install.sh"
 
 # Sync the API's config to the ports in effect this run (including AdGuard
 # ports adopted from an existing AdGuardHome.yaml). Restart only on change.
-ENV_FILE=/etc/privacybrick/.env
+ENV_FILE=/etc/holdfastbrick/.env
 ENV_CHANGED=0
-set_env_kv "$ENV_FILE" PRIVACYBRICK_ADGUARD_URL "http://127.0.0.1:${ADGUARD_UI_PORT}"
-set_env_kv "$ENV_FILE" PRIVACYBRICK_NTOPNG_URL "http://127.0.0.1:${NTOPNG_PORT}"
-set_env_kv "$ENV_FILE" PRIVACYBRICK_PORT "${API_PORT}"
+set_env_kv "$ENV_FILE" HOLDFASTBRICK_ADGUARD_URL "http://127.0.0.1:${ADGUARD_UI_PORT}"
+set_env_kv "$ENV_FILE" HOLDFASTBRICK_NTOPNG_URL "http://127.0.0.1:${NTOPNG_PORT}"
+set_env_kv "$ENV_FILE" HOLDFASTBRICK_PORT "${API_PORT}"
 # Encrypted DNS is carried by Unbound (DoT) in forward mode; in --recursive
 # mode upstream traffic is plain DNS to the authoritative servers, so no
 # unit legitimately represents "Encrypted DNS".
 if [ "$RECURSIVE" -eq 1 ]; then
-  set_env_kv "$ENV_FILE" PRIVACYBRICK_DOH_SERVICE_UNIT ""
+  set_env_kv "$ENV_FILE" HOLDFASTBRICK_DOH_SERVICE_UNIT ""
 else
-  set_env_kv "$ENV_FILE" PRIVACYBRICK_DOH_SERVICE_UNIT "unbound"
+  set_env_kv "$ENV_FILE" HOLDFASTBRICK_DOH_SERVICE_UNIT "unbound"
 fi
 
 # Give the API its own AdGuard Home login: a dedicated service account with a
@@ -602,7 +602,7 @@ fi
 # credential wiring, and the user's own admin login stays untouched. Skipped
 # whenever .env already carries a username (user-provided or from a prior run).
 if [ -n "${AGH_UNIT:-}" ] && [ -n "${AGH_YAML:-}" ] && [ -f "$AGH_YAML" ] \
-   && ! grep -qE '^PRIVACYBRICK_ADGUARD_USERNAME=.+' "$ENV_FILE"; then
+   && ! grep -qE '^HOLDFASTBRICK_ADGUARD_USERNAME=.+' "$ENV_FILE"; then
   # If AdGuard has no users at all, its API is open — adding one would
   # suddenly lock the web UI, so leave it alone.
   AGH_HAS_AUTH="$(python3 - "$AGH_YAML" <<'PYEOF'
@@ -613,7 +613,7 @@ print(1 if (cfg.get("users") or []) else 0)
 PYEOF
 )"
   if [ "$AGH_HAS_AUTH" = "1" ]; then
-    PB_AGH_USER=privacybrick
+    PB_AGH_USER=holdfastbrick
     PB_AGH_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
     systemctl stop "$AGH_UNIT" || true
     BAK="${AGH_YAML}.bak.$(date +%s)"
@@ -635,8 +635,8 @@ with open(path, "w") as f:
 print("    -> Created AdGuard service account '%s' for the API" % user)
 PYEOF
     systemctl start "$AGH_UNIT"
-    set_env_kv "$ENV_FILE" PRIVACYBRICK_ADGUARD_USERNAME "$PB_AGH_USER"
-    set_env_kv "$ENV_FILE" PRIVACYBRICK_ADGUARD_PASSWORD "$PB_AGH_PASS"
+    set_env_kv "$ENV_FILE" HOLDFASTBRICK_ADGUARD_USERNAME "$PB_AGH_USER"
+    set_env_kv "$ENV_FILE" HOLDFASTBRICK_ADGUARD_PASSWORD "$PB_AGH_PASS"
     note "API's AdGuard credentials written to ${ENV_FILE}."
   else
     note "AdGuard Home has no users configured — API needs no credentials."
@@ -644,8 +644,8 @@ PYEOF
 fi
 
 if [ "$ENV_CHANGED" -eq 1 ]; then
-  note "Updated ${ENV_FILE} to current ports — restarting privacybrick-api."
-  systemctl restart privacybrick-api
+  note "Updated ${ENV_FILE} to current ports — restarting holdfastbrick-api."
+  systemctl restart holdfastbrick-api
 else
   note "${ENV_FILE} already matches current ports."
 fi
@@ -668,18 +668,18 @@ cat <<EOF
     NextDNS CLI      127.0.0.1:${NEXTDNS_PORT}  (standby — NOT in the chain)
     ntopng           http://${PI_IP}:${NTOPNG_PORT}
     Tailscale        $( [ "$TAILSCALE_PENDING" -eq 1 ] && echo "LOGIN PENDING — run: sudo tailscale up" || echo "up ($(tailscale ip -4 2>/dev/null | head -1))" )
-    PrivacyBrick API http://${PI_IP}:${API_PORT}  (pairing code printed above)
+    Holdfast API http://${PI_IP}:${API_PORT}  (pairing code printed above)
 
   Still to do (manual):
 EOF
 if [ "$ADGUARD_WIRED" -eq 1 ]; then
-  if grep -qE '^PRIVACYBRICK_ADGUARD_USERNAME=.+' "$ENV_FILE" 2>/dev/null; then
+  if grep -qE '^HOLDFASTBRICK_ADGUARD_USERNAME=.+' "$ENV_FILE" 2>/dev/null; then
     echo "    1. AdGuard Home: wired to Unbound; the API has its own AdGuard login. Nothing to do."
   else
     echo "    1. AdGuard Home is wired to Unbound. Log in at http://${PI_IP}:${ADGUARD_UI_PORT} and put"
-    echo "       your admin credentials into /etc/privacybrick/.env"
-    echo "       (PRIVACYBRICK_ADGUARD_USERNAME / _PASSWORD), then:"
-    echo "       sudo systemctl restart privacybrick-api"
+    echo "       your admin credentials into /etc/holdfastbrick/.env"
+    echo "       (HOLDFASTBRICK_ADGUARD_USERNAME / _PASSWORD), then:"
+    echo "       sudo systemctl restart holdfastbrick-api"
   fi
 else
   echo "    1. Finish AdGuard Home's first-run wizard: http://${PI_IP}:${ADGUARD_UI_PORT}"

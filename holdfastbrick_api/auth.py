@@ -4,7 +4,7 @@ Flow (designed so a non-technical user never types an IP address):
 
 1. The Pi advertises itself over mDNS/Bonjour; the iOS app finds it.
 2. The user (or the install script) opens a pairing window by running
-   ``privacybrick-pair`` on the Pi, which prints a 6-digit code. The install
+   ``holdfastbrick-pair`` on the Pi, which prints a 6-digit code. The install
    script also opens a window automatically on first boot so onboarding is
    just "enter the code from the sticker/screen".
 3. The app POSTs the code to ``/api/v1/pair`` and receives a long-lived

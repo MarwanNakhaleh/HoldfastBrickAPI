@@ -1,4 +1,4 @@
-"""`privacybrick-pair` — open a pairing window and print the 6-digit code.
+"""`holdfastbrick-pair` — open a pairing window and print the 6-digit code.
 
 Run this on the Pi (over SSH or a connected screen) when adding a new phone.
 The code is valid for 5 minutes and single-use.
@@ -15,7 +15,7 @@ def main() -> None:
     minutes = settings.pairing_window_seconds // 60
     print()
     print("  ┌────────────────────────────────────┐")
-    print("  │        PrivacyBrick pairing        │")
+    print("  │          Holdfast pairing          │")
     print("  │                                    │")
     print(f"  │        Code:  {code[:3]} {code[3:]}              │")
     print("  │                                    │")

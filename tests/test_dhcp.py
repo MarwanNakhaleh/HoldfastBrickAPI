@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from privacybrick_api.services import dhcp, system
+from holdfastbrick_api.services import dhcp, system
 
 # --- pick_dhcp_range ----------------------------------------------------------
 
@@ -306,7 +306,7 @@ def test_enable_pins_static_ip_and_sets_config(authed, monkeypatch, tmp_path):
     _wire_route_file(monkeypatch, tmp_path)
     interfaces_file = tmp_path / "interfaces"
     interfaces_file.write_text(SAMPLE_INTERFACES)
-    backup_file = tmp_path / "interfaces.privacybrick-bak"
+    backup_file = tmp_path / "interfaces.holdfastbrick-bak"
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
     monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", backup_file)
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda iface: "255.255.255.0")
@@ -356,7 +356,7 @@ def test_enable_unrecognized_interfaces_file_is_422(authed, monkeypatch, tmp_pat
     # No eth0 stanza at all (e.g. a NetworkManager-managed system).
     interfaces_file.write_text("auto lo\niface lo inet loopback\n")
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
         post_routes={
@@ -381,7 +381,7 @@ def test_enable_trusts_user_configured_static_stanza(authed, monkeypatch, tmp_pa
     original = "iface eth0 inet static\n    address 192.168.1.230\n"
     interfaces_file.write_text(original)
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
@@ -408,7 +408,7 @@ def test_enable_static_probe_error_fails_closed_into_pin(authed, monkeypatch, tm
     interfaces_file = tmp_path / "interfaces"
     interfaces_file.write_text("auto eth0\niface eth0 inet dhcp\n")
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
@@ -439,7 +439,7 @@ def test_enable_already_pinned_stanza_skips_rewrite(authed, monkeypatch, tmp_pat
     )
     interfaces_file.write_text(pinned)
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
@@ -517,7 +517,7 @@ def test_netmask_to_prefix():
 
 
 def _nm_fake_run(calls, connections_stdout):
-    from privacybrick_api.runner import CommandResult
+    from holdfastbrick_api.runner import CommandResult
 
     async def fake_run(argv, timeout=20.0):
         calls.append(argv)
@@ -536,7 +536,7 @@ def test_enable_pins_via_networkmanager_when_no_ifupdown(authed, monkeypatch, tm
     interfaces_file = tmp_path / "interfaces"
     interfaces_file.write_text("auto lo\niface lo inet loopback\n")
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     calls: list = []
     monkeypatch.setattr(
@@ -569,7 +569,7 @@ def test_enable_networkmanager_not_managing_interface_is_422(authed, monkeypatch
     interfaces_file = tmp_path / "interfaces"
     interfaces_file.write_text("auto lo\niface lo inet loopback\n")
     monkeypatch.setattr(dhcp, "INTERFACES_FILE", interfaces_file)
-    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.privacybrick-bak")
+    monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     calls: list = []
     monkeypatch.setattr(dhcp, "run", _nm_fake_run(calls, "lo:lo\n"))  # no eth0

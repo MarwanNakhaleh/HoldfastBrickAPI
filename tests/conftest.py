@@ -8,15 +8,15 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRIVACYBRICK_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("PRIVACYBRICK_MDNS_ENABLED", "false")
+    monkeypatch.setenv("HOLDFASTBRICK_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HOLDFASTBRICK_MDNS_ENABLED", "false")
     # Re-import with a clean state dir.
     import importlib
 
-    from privacybrick_api import config
+    from holdfastbrick_api import config
 
     importlib.reload(config)
-    from privacybrick_api import auth, main
+    from holdfastbrick_api import auth, main
 
     importlib.reload(auth)
     importlib.reload(main)

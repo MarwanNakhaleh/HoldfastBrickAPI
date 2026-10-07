@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# privacybrick-logs — follow live logs from the PrivacyBrick stack.
+# holdfastbrick-logs — follow live logs from the Holdfast Brick stack.
 #
 # Usage:
-#   privacybrick-logs            # live PrivacyBrick API logs (default)
-#   privacybrick-logs api        # same
-#   privacybrick-logs adguard    # AdGuard Home
-#   privacybrick-logs unbound    # Unbound (Private DNS)
-#   privacybrick-logs doh        # Encrypted DNS (unbound DoT — alias of 'unbound')
-#   privacybrick-logs ntopng     # ntopng (Network Monitor)
-#   privacybrick-logs nextdns    # NextDNS CLI
-#   privacybrick-logs tailscale  # tailscaled (Remote Access)
-#   privacybrick-logs all        # everything, interleaved
-#   privacybrick-logs api -n 200 # extra args pass through to journalctl
+#   holdfastbrick-logs            # live Holdfast API logs (default)
+#   holdfastbrick-logs api        # same
+#   holdfastbrick-logs adguard    # AdGuard Home
+#   holdfastbrick-logs unbound    # Unbound (Private DNS)
+#   holdfastbrick-logs doh        # Encrypted DNS (unbound DoT — alias of 'unbound')
+#   holdfastbrick-logs ntopng     # ntopng (Network Monitor)
+#   holdfastbrick-logs nextdns    # NextDNS CLI
+#   holdfastbrick-logs tailscale  # tailscaled (Remote Access)
+#   holdfastbrick-logs all        # everything, interleaved
+#   holdfastbrick-logs api -n 200 # extra args pass through to journalctl
 set -euo pipefail
 
 target="${1:-api}"
@@ -26,14 +26,14 @@ adguard_unit() {
 }
 
 case "$target" in
-  api)       units=(-u privacybrick-api) ;;
+  api)       units=(-u holdfastbrick-api) ;;
   adguard)   units=(-u "$(adguard_unit)") ;;
   unbound)   units=(-u unbound) ;;
   doh)       units=(-u unbound) ;;
   ntopng)    units=(-u ntopng) ;;
   nextdns)   units=(-u nextdns) ;;
   tailscale) units=(-u tailscaled) ;;
-  all)       units=(-u privacybrick-api -u "$(adguard_unit)" -u unbound
+  all)       units=(-u holdfastbrick-api -u "$(adguard_unit)" -u unbound
                     -u ntopng -u nextdns -u tailscaled) ;;
   -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
   *)
