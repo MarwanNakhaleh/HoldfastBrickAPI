@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from holdfastbrick_api.services import dhcp, system
+from holdfastbrick_api.services import dhcp, ipconfig, system
 
 # --- pick_dhcp_range ----------------------------------------------------------
 
@@ -424,7 +424,7 @@ def test_enable_static_probe_error_fails_closed_into_pin(authed, monkeypatch, tm
     assert resp.status_code == 200
     assert resp.json()["needs_reboot"] is True
     assert "inet static" in interfaces_file.read_text()
-    assert dhcp.PIN_MARKER in interfaces_file.read_text()
+    assert ipconfig.PIN_MARKER in interfaces_file.read_text()
 
 
 def test_enable_already_pinned_stanza_skips_rewrite(authed, monkeypatch, tmp_path):
@@ -434,7 +434,7 @@ def test_enable_already_pinned_stanza_skips_rewrite(authed, monkeypatch, tmp_pat
     _wire_route_file(monkeypatch, tmp_path)
     interfaces_file = tmp_path / "interfaces"
     pinned = (
-        f"{dhcp.PIN_MARKER}\n"
+        f"{ipconfig.PIN_MARKER}\n"
         "iface eth0 inet static\n    address 192.168.1.230\n"
     )
     interfaces_file.write_text(pinned)
@@ -511,9 +511,9 @@ def test_disable_when_never_configured_still_ok(authed, monkeypatch):
 
 
 def test_netmask_to_prefix():
-    assert dhcp.netmask_to_prefix("255.255.255.0") == 24
-    assert dhcp.netmask_to_prefix("255.255.255.192") == 26
-    assert dhcp.netmask_to_prefix("255.255.0.0") == 16
+    assert ipconfig.netmask_to_prefix("255.255.255.0") == 24
+    assert ipconfig.netmask_to_prefix("255.255.255.192") == 26
+    assert ipconfig.netmask_to_prefix("255.255.0.0") == 16
 
 
 def _nm_fake_run(calls, connections_stdout):
@@ -540,7 +540,7 @@ def test_enable_pins_via_networkmanager_when_no_ifupdown(authed, monkeypatch, tm
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     calls: list = []
     monkeypatch.setattr(
-        dhcp, "run", _nm_fake_run(calls, "lo:lo\nWired connection 1:eth0\n")
+        ipconfig, "run", _nm_fake_run(calls, "lo:lo\nWired connection 1:eth0\n")
     )
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
@@ -572,7 +572,7 @@ def test_enable_networkmanager_not_managing_interface_is_422(authed, monkeypatch
     monkeypatch.setattr(dhcp, "INTERFACES_BACKUP", tmp_path / "interfaces.holdfastbrick-bak")
     monkeypatch.setattr(dhcp, "_interface_netmask", lambda _: "255.255.255.0")
     calls: list = []
-    monkeypatch.setattr(dhcp, "run", _nm_fake_run(calls, "lo:lo\n"))  # no eth0
+    monkeypatch.setattr(ipconfig, "run", _nm_fake_run(calls, "lo:lo\n"))  # no eth0
     fake = FakeAdGuard(
         get_routes={"/control/dhcp/interfaces": ADGUARD_INTERFACES},
         post_routes={

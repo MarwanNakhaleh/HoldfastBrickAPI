@@ -18,7 +18,7 @@ from . import __version__
 from .auth import require_token, try_pair
 from .config import settings
 from .models import IdentityResponse, OverviewResponse, PairRequest, PairResponse
-from .services import adguard, dhcp, doh, headscale, nextdns, ntopng, system, tailscale, unbound
+from .services import adguard, dhcp, doh, headscale, network, nextdns, ntopng, system, tailscale, unbound
 
 try:
     from zeroconf import ServiceInfo
@@ -72,6 +72,7 @@ for service_router in (
     tailscale.router,
     adguard.router,
     dhcp.router,
+    network.router,
     headscale.router,
     nextdns.router,
     ntopng.router,

@@ -54,6 +54,7 @@ To pair another phone later: `holdfastbrick-pair`
 | Remote Access    | Tailscale       | `tailscale` CLI (`--json`) |
 | Cloud Filtering  | NextDNS         | `nextdns` CLI |
 | Network Monitor  | ntopng          | local REST API (`/lua/rest/v2/...`) |
+| Network          | Device network role | /proc + files + nmcli |
 | Household        | Headscale       | `headscale` CLI |
 | Device           | DietPi / OS     | `systemctl`, `vcgencmd`, `free`, `df`, … |
 
@@ -74,6 +75,9 @@ the API can only run the specific binaries above, argv-style with no shell.
 - `GET|POST /tailscale/{status,up,down}`
 - `GET|POST /nextdns/{status,config,activate,deactivate,restart}`
 - `GET /ntopng/{status,hosts,interface-stats}`
+- `GET /network/status` — connection report: interface, ethernet or WiFi, cable state, IP, gateway, whether the IP is static, and what manages it
+- `POST /network/pin-ip` — pin the brick's current IP as static (standalone, no DHCP takeover); idempotent, tells you when a reboot is needed
+- `GET /network/health` — connection-health verdict (protected / at risk / down): wired link, static IP, DNS serving, upstream DNS, tunnel, plus the fail-open note (router as secondary resolver)
 - `GET|POST /system/{info,reboot}`
 - `GET /household/status` — Headscale availability + devices enrolled on the household
 - `POST /household/enroll` `{device_name?}` → `{server_url, auth_key, expires_at}` — single-use join key (24h) for a new phone
