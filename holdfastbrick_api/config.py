@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # Tailscale CLI.
     tailscale_bin: str = "tailscale"
 
+    # Headscale CLI (household coordination server).
+    headscale_bin: str = "headscale"
+
+    # Coordination URL phones use to join the household (written by
+    # provisioning into /etc/holdfastbrick/.env).
+    headscale_url: str = ""
+
+    # Household CA certificate; the .mobileconfig profile next to it is
+    # served to phones so they trust the brick's Headscale certificate.
+    headscale_ca_cert: Path = Path("/etc/headscale/ca/ca.crt")
+
     # NextDNS CLI.
     nextdns_bin: str = "nextdns"
 

@@ -18,6 +18,7 @@ from .config import settings
 ALLOWED_BINARIES = {
     settings.unbound_control_bin,
     settings.tailscale_bin,
+    settings.headscale_bin,
     settings.nextdns_bin,
     "systemctl",
     "hostname",
@@ -30,6 +31,12 @@ ALLOWED_BINARIES = {
     "shutdown",
     "systemd-run",    # detached self-update (deploy/self-update.sh)
     "nmcli",          # static-IP pinning on NetworkManager systems (Raspberry Pi OS)
+}
+
+# Binaries where only specific subcommands (argv[1]) may run — headscale has
+# mutating verbs (serve, derpmode, ...) the API must never reach.
+ALLOWED_SUBCOMMANDS: dict[str, set[str]] = {
+    "headscale": {"version", "users", "preauthkeys", "nodes"},
 }
 
 DEFAULT_TIMEOUT = 20.0
@@ -59,6 +66,10 @@ async def run(argv: list[str], timeout: float = DEFAULT_TIMEOUT) -> CommandResul
     binary = argv[0]
     if binary not in ALLOWED_BINARIES:
         raise CommandError(f"binary not allowlisted: {binary}")
+    allowed = ALLOWED_SUBCOMMANDS.get(binary)
+    if allowed is not None and (len(argv) < 2 or argv[1] not in allowed):
+        requested = argv[1] if len(argv) > 1 else "(no subcommand)"
+        raise CommandError(f"subcommand not allowlisted for {binary}: {requested}")
     resolved = shutil.which(binary)
     if resolved is None:
         raise CommandError(f"binary not installed: {binary}")

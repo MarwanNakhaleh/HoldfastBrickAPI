@@ -20,6 +20,7 @@ config file it would change is backed up first as `<file>.bak.<epoch>`.
 | Unbound | Debian apt (also carries encrypted DNS via native DoT forwarding) |
 | AdGuard Home | official installer (`raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh`) |
 | Tailscale | Tailscale apt repo (`pkgs.tailscale.com/stable/debian`, bookworm) |
+| Headscale | official DEB from GitHub releases (`github.com/juanfont/headscale`, arm64/amd64) |
 | ntopng | ntop apt repo (`packages.ntop.org`) if reachable, else Debian apt |
 | NextDNS CLI | official installer (`nextdns.io/install`) |
 | Holdfast API | this repo, via `deploy/install.sh` (invoked at the end) |
@@ -62,11 +63,17 @@ flag or environment variable (flag wins):
 | Default | Service | Bound to | Flag / env var | Purpose |
 |---|---|---|---|---|
 | 53 | AdGuard Home | 0.0.0.0 | `--adguard-dns-port` / `ADGUARD_DNS_PORT` | DNS for the LAN |
+| 443 | Headscale | 0.0.0.0 | `--headscale-port` / `HEADSCALE_PORT` | household VPN control plane (TLS) — **must be free** |
 | 5335 | Unbound | 127.0.0.1 | `--unbound-port` / `UNBOUND_PORT` | caching resolver behind AdGuard, DoT upstream |
 | 5054 | NextDNS CLI | 127.0.0.1 | `--nextdns-port` / `NEXTDNS_PORT` | alternative upstream, standby only |
 | 3000 | AdGuard Home | 0.0.0.0 | `--adguard-ui-port` / `ADGUARD_UI_PORT` | web UI / REST API |
 | 3001 | ntopng | 0.0.0.0 | `--ntopng-port` / `NTOPNG_PORT` | web UI / REST API |
 | 8787 | Holdfast API | 0.0.0.0 | `--api-port` / `API_PORT` | control-plane API for the iOS app |
+
+Headscale's 443 is the one port with a hard edge: phones reach it as
+`https://<pi-ip>` (no port suffix), and if something else already owns 443
+you must move that service or override the port (`--headscale-port N` — the
+URL the phones use then becomes `https://<pi-ip>:N`).
 
 ```bash
 # Example: AdGuard UI on 6969, DNS on 54
@@ -92,6 +99,98 @@ Two behaviors worth knowing:
   any time by re-running the script with/without the flag.
 - `--<service>-port N` — see the Ports table above. Both `--flag N` and
   `--flag=N` forms work.
+- `HEADSCALE_VERSION=v0.26.0` (env only) — pin a specific headscale release
+  instead of the latest GitHub tag.
+
+## Headscale: the household VPN
+
+The brick runs **Headscale**, the open-source Tailscale control plane, so
+family phones use the official Tailscale apps pointed at the brick instead of
+Tailscale Inc. It is installed from the official DEB on the
+[juanfont/headscale GitHub releases](https://github.com/juanfont/headscale/releases).
+Only arm64 and amd64 builds exist: on a 32-bit (armhf) OS the stage prints a
+warning and skips itself. The DEB ships the `headscale` systemd unit and a
+`headscale` service user, which the config and key ownership below assume.
+
+### The household CA
+
+A LAN IP cannot get a certificate from a public CA, so the stage generates its
+own root CA on the brick. It is generated once and never regenerated; the
+phone-facing server cert is reissued automatically on a re-run when the LAN IP
+or hostname changed, or when it is within 30 days of expiry (the old one is
+backed up first, like every config file):
+
+| File | What |
+|---|---|
+| `/etc/headscale/ca/ca.crt` | household root CA, CN `Holdfast Household CA`, RSA 4096, 10 years |
+| `/etc/headscale/ca/ca.key` | CA private key, 0600 — stays on the brick |
+| `/etc/headscale/ca/server.crt` | TLS cert for headscale: SANs = brick LAN IP (IP SAN) + hostname (DNS SAN), 825 days (the iOS maximum for non-CA certs) |
+| `/etc/headscale/ca/server.key` | TLS private key, 0600 |
+| `/etc/headscale/ca/holdfast-household-ca.mobileconfig` | unsigned iOS configuration profile containing the CA, for one-tap trust install |
+
+All of `/etc/headscale/ca/` is owned by `headscale:headscale` (the service
+user must read the TLS key); the cert, CA cert and profile are world-readable,
+the two private keys are 0600.
+
+### Headscale config
+
+`/etc/headscale/config.yaml` is built convergently: the DEB's own example
+(`/usr/share/doc/headscale/examples/config-example.yaml`) is used as the base
+— its YAML schema always matches the exact headscale version installed — and
+four keys are patched:
+
+| Key | Value |
+|---|---|
+| `server_url` | `https://<pi-ip>` (plus `:N` only if you overrode `--headscale-port`) |
+| `listen_addr` | `0.0.0.0:443` |
+| `tls_cert_path` | `/etc/headscale/ca/server.crt` |
+| `tls_key_path` | `/etc/headscale/ca/server.key` |
+
+With `tls_cert_path`/`tls_key_path` set, `listen_addr` serves TLS. Everything
+else (sqlite DB under `/var/lib/headscale`, unix socket under
+`/var/run/headscale`, noise keys, DERP map) keeps the DEB example's defaults.
+
+### Brick enrollment (remote-access migration)
+
+After headscale is up, the stage creates the `family` headscale user
+(idempotent: an "already exists" result is fine), mints a single-use preauth
+key, and runs:
+
+```bash
+tailscale up --login-server=https://<pi-ip> --authkey <key> --accept-dns=false
+```
+
+**This moves the brick's remote access to the household headscale.** Any
+previous Tailscale Inc login on the brick ends — that is the intended product
+behavior, and the script prints a notice when it happens. Re-runs detect an
+existing enrollment (via `tailscale debug prefs` → `ControlURL`) and skip.
+`--accept-dns=false` keeps the brick's DNS stack on the AdGuard chain;
+headscale never touches `/etc/resolv.conf`.
+
+The API picks the URL up from `/etc/holdfastbrick/.env`:
+`HOLDFASTBRICK_HEADSCALE_URL=https://<pi-ip>`.
+
+### Phones (per family member)
+
+1. Copy `holdfast-household-ca.mobileconfig` off the brick (AirDrop, `scp`,
+   ...) and install it, then enable full trust: Settings → General → About →
+   Certificate Trust Settings. Without this the Tailscale app rejects the
+   brick's certificate.
+2. Tailscale app → account → **Use custom coordination server** →
+   `https://<pi-ip>` → finish the login page it opens: approve the
+   registration with the `headscale nodes register --user family <key>`
+   command the page shows, run on the brick.
+
+### Verifying the headscale chain
+
+```bash
+systemctl status headscale
+curl -k https://127.0.0.1/health        # headscale serves /health itself
+                                        # or: curl --cacert /etc/headscale/ca/ca.crt https://127.0.0.1/health
+headscale nodes list                    # the brick is listed under user 'family'
+openssl verify -CAfile /etc/headscale/ca/ca.crt /etc/headscale/ca/server.crt
+tailscale status                        # brick has a 100.x address from the household tailnet
+```
 
 ## Re-runs only touch what's wrong
 
@@ -114,11 +213,18 @@ restarted.
 2. **ntopng token** *(optional)* — if you create one, put it in
    `/etc/holdfastbrick/.env` (`HOLDFASTBRICK_NTOPNG_TOKEN`), then
    `sudo systemctl restart holdfastbrick-api`.
-3. **Tailscale login** — if the script printed an auth URL you didn't visit,
-   run `sudo tailscale up` and follow the link.
-4. **Router** — point your router's DHCP DNS at the Pi's LAN IP so every
+3. **Tailscale / household VPN** — the script enrolls the brick into the
+   household headscale automatically (see
+   [Headscale: the household VPN](#headscale-the-household-vpn)); this
+   migrates remote access off any prior Tailscale Inc login, which is
+   intended. If it printed that enrollment didn't complete, just re-run
+   `provision.sh`.
+4. **Family phones** — trust the household CA, then point the Tailscale app
+   at the brick (both steps in
+   [Phones](#phones-per-family-member) above).
+5. **Router** — point your router's DHCP DNS at the Pi's LAN IP so every
    device on the network resolves through AdGuard Home.
-5. *(Optional)* **NextDNS instead of the Unbound chain** —
+6. *(Optional)* **NextDNS instead of the Unbound chain** —
    `sudo nextdns config set -profile <your-profile-id> && sudo nextdns restart`,
    then change AdGuard's upstream from `127.0.0.1:5335` to `127.0.0.1:5054`.
    The CLI is installed and listening but intentionally not "activated" (it
@@ -146,17 +252,23 @@ dig @127.0.0.1 doubleclick.net +short
 # 3. NextDNS standby listener
 dig @127.0.0.1 -p 5054 example.com +short
 
-# 4. Web UIs and API
+# 4. Headscale (household VPN) — see its section above for the full chain
+systemctl status headscale
+curl -k https://127.0.0.1/health
+headscale nodes list
+openssl verify -CAfile /etc/headscale/ca/ca.crt /etc/headscale/ca/server.crt
+
+# 5. Web UIs and API
 curl -s http://127.0.0.1:3000/ -o /dev/null -w 'adguard ui: %{http_code}\n'
 curl -s http://127.0.0.1:3001/ -o /dev/null -w 'ntopng ui:  %{http_code}\n'
 curl -s http://127.0.0.1:8787/api/v1/ping
 
-# 5. Services at a glance
-systemctl --no-pager status unbound AdGuardHome ntopng nextdns tailscaled holdfastbrick-api
+# 6. Services at a glance
+systemctl --no-pager status unbound AdGuardHome ntopng nextdns tailscaled headscale holdfastbrick-api
 sudo unbound-control status                 # the API uses this same channel
-tailscale status
+tailscale status                            # 100.x address = enrolled to the household headscale
 ```
 
 If a link fails, check its logs: `journalctl -u <unit> -e` (units: `unbound`,
-`AdGuardHome`, `ntopng`, `nextdns`, `tailscaled`, `holdfastbrick-api`) — or
-`holdfastbrick-logs <service>`.
+`AdGuardHome`, `ntopng`, `nextdns`, `tailscaled`, `headscale`,
+`holdfastbrick-api`) — or `holdfastbrick-logs <service>`.
