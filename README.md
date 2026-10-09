@@ -64,8 +64,11 @@ the API can only run the specific binaries above, argv-style with no shell.
 
 ## API surface (all under `/api/v1`)
 
-- `GET /ping` — unauthenticated identity check (used during discovery)
-- `POST /pair` `{code, client_name}` → `{token}` — exchange pairing code for a bearer token
+- `GET /ping` — unauthenticated identity check (used during discovery); includes `cert_fingerprint` when TLS is on
+- `POST /pair` `{code, client_name}` → `{token, cert_fingerprint}` — exchange pairing code for a bearer token; 5 wrong codes close the window, and attempts are rate-limited per address
+- `GET /auth/tokens` — paired devices (id = short hash; token values are never returned)
+- `DELETE /auth/tokens/{id}` — revoke a paired device's token
+- `DELETE /auth/tokens/self` — revoke the calling device's token
 - `GET /overview` — one call for the app's home screen: per-service health + overall "protected"
 - `GET /identity` — device name/version + LAN and Tailscale addresses (how the app learns its remote address)
 - `GET|POST /adguard/{status,stats,querylog,protection}`
@@ -79,22 +82,41 @@ the API can only run the specific binaries above, argv-style with no shell.
 - `GET /network/status` — connection report: interface, ethernet or WiFi, cable state, IP, gateway, whether the IP is static, and what manages it
 - `POST /network/pin-ip` — pin the brick's current IP as static (standalone, no DHCP takeover); idempotent, tells you when a reboot is needed
 - `GET /network/health` — connection-health verdict (protected / at risk / down): wired link, static IP, DNS serving, upstream DNS, tunnel, plus the fail-open note (router as secondary resolver)
-- `GET|POST /system/{info,reboot}`
+- `GET|POST /system/{info,reboot}` — reboots are cooled down: one successful request per 10 minutes
+- `POST /system/confirm-code` — show a 6-digit confirmation code on the brick (response carries only the expiry; the code itself never leaves the device)
+- `POST /system/ssh-key` `{public_key, confirm_code}` — install an ed25519 root SSH key; needs a fresh confirmation code from the brick
+- `DELETE /system/ssh-key` — remove the SSH keys this API installed (tagged `# holdfastbrick-managed`) and report how many
 - `GET /updates/check` — pending OS packages (security ones flagged) plus current-vs-latest for every stack component; installs nothing
 - `GET /household/status` — Headscale availability + devices enrolled on the household
-- `POST /household/enroll` `{device_name?}` → `{server_url, auth_key, expires_at}` — single-use join key (24h) for a new phone
+- `POST /household/enroll` `{device_name?}` → `{server_url, auth_key, expires_at}` — single-use join key (24h) for a new phone; capped at 5 outstanding unused keys
 - `GET /household/devices` — enrolled household devices
 - `POST /household/devices/{id}/remove` — remove an enrolled device
 - `GET /household/ca`, `GET /household/ca/profile` — household CA certificate (PEM) and Apple `.mobileconfig` profile so phones trust the brick's Headscale certificate
 
 Everything except `/ping` and `/pair` requires `Authorization: Bearer <token>`.
-Interactive docs at `http://<pi>:8787/docs` while developing.
+Interactive docs (`/docs`, `/redoc`, `/openapi.json`) are disabled: they were an
+unauthenticated map of the whole API.
 
 ## Security model
 
 - **Pairing**: single-use, 5-minute, 6-digit codes generated on the device
-  (`holdfastbrick-pair`). Successful pairing issues a long-lived token stored
-  in the phone's Keychain. Tokens live in `/etc/holdfastbrick/state.json` (0600).
+  (`holdfastbrick-pair`). Five wrong codes close the window: run the command
+  again for a fresh one. Pairing attempts are rate-limited per source
+  address. Successful pairing issues a long-lived token stored in the phone's
+  Keychain. Tokens live in `/etc/holdfastbrick/state.json` (0600) and can be
+  listed and revoked (`/auth/tokens`).
+- **TLS**: when the household CA's server certificate exists
+  (`HOLDFASTBRICK_TLS_CERT` / `HOLDFASTBRICK_TLS_KEY`, empty string to
+  disable), the API serves HTTPS on port 8787. `/ping` and `/pair` report the
+  certificate's SHA-256 fingerprint so the phone can pin the brick's identity,
+  and the Bonjour advertisement carries `tls=1`.
+- **DNS-rebinding guard**: requests whose Host header isn't this brick
+  (localhost, literal IPs, `*.local`, `*.ts.net`, or `HOLDFASTBRICK_ALLOWED_HOSTS`)
+  get a 400.
+- **SSH keys**: installing a root SSH key needs both the bearer token and a
+  6-digit code shown only on the brick's console. The first install also
+  writes `PasswordAuthentication no` to
+  `/etc/ssh/sshd_config.d/holdfast-hardening.conf` and reloads sshd.
 - **No inbound cloud dependency**: the API binds to the LAN; remote access is
   only via your own tailnet.
 - **Command allowlist**: no shell execution, fixed binary set, hard timeouts.
@@ -106,7 +128,7 @@ Interactive docs at `http://<pi>:8787/docs` while developing.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-HOLDFASTBRICK_STATE_DIR=./tmp-state holdfastbrick-api   # http://localhost:8787/docs
+HOLDFASTBRICK_STATE_DIR=./tmp-state holdfastbrick-api   # http://localhost:8787 (HTTPS only when the TLS cert files exist; set HOLDFASTBRICK_TLS_CERT="" to force plain HTTP)
 pytest                                                 # smoke tests, no Pi needed
 ```
 

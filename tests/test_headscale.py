@@ -3,6 +3,7 @@ and the pure parse/extract logic."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -103,6 +104,69 @@ def test_extract_preauth_key_none_found():
     assert headscale.extract_preauth_key("error: something broke") == ""
 
 
+# --- count_unused_preauth_keys (enroll cap) --------------------------------------
+
+PARSER_NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc)
+# Far enough out that these stay unexpired for the whole test-run day.
+FUTURE = {"seconds": int(PARSER_NOW.timestamp()) + 30 * 86400}
+PAST = {"seconds": int(PARSER_NOW.timestamp()) - 3600}
+
+
+def _preauth(
+    key_id: int,
+    *,
+    user_id=7,
+    used=False,
+    expiration=FUTURE,
+):
+    return {
+        "id": key_id,
+        "key": "hskey-auth-masked",
+        "user": {"id": user_id, "name": "family"},
+        "used": used,
+        "expiration": expiration,
+    }
+
+
+def test_count_unused_preauth_keys_counts_family_only():
+    keys = json.dumps(
+        [
+            _preauth(1),  # counts
+            _preauth(2, used=True),  # used → no
+            _preauth(3, expiration=PAST),  # expired → no
+            _preauth(4, user_id=9),  # another user → no
+            _preauth(5, expiration="2026-10-09T13:00:00Z"),  # ISO string → counts
+            _preauth(6, expiration=None),  # unknown expiry counts (safe side)
+        ]
+    )
+    assert headscale.count_unused_preauth_keys(keys, 7, PARSER_NOW) == 3
+
+
+def test_count_unused_preauth_keys_int_user_shapes():
+    keys = json.dumps(
+        [
+            {"id": 1, "user": 7, "used": False, "expiration": FUTURE},
+            {"id": 2, "user": "7", "used": False, "expiration": FUTURE},
+        ]
+    )
+    assert headscale.count_unused_preauth_keys(keys, 7, PARSER_NOW) == 2
+
+
+def test_count_unused_preauth_keys_tolerates_absence():
+    assert headscale.count_unused_preauth_keys("null", 7, PARSER_NOW) == 0
+    assert headscale.count_unused_preauth_keys("[]", 7, PARSER_NOW) == 0
+    assert headscale.count_unused_preauth_keys("garbage", 7, PARSER_NOW) is None
+    assert headscale.count_unused_preauth_keys('{"a": 1}', 7, PARSER_NOW) is None
+    # A list whose items aren't key objects reads as "no outstanding keys":
+    # the cap is fail-open by design, enrollment must not break over it.
+    assert headscale.count_unused_preauth_keys("[1, 2]", 7, PARSER_NOW) == 0
+
+
+def test_count_unused_preauth_keys_wrapped_dict():
+    wrapped = json.dumps({"preAuthKeys": [_preauth(1), _preauth(2, used=True)]})
+    assert headscale.count_unused_preauth_keys(wrapped, 7, PARSER_NOW) == 1
+
+
 # --- fake CLI wiring -----------------------------------------------------------
 
 
@@ -116,6 +180,8 @@ def _wire_fake_headscale(
     delete_error="",
     timeout_on_delete=False,
     missing=False,
+    preauth_list="null",
+    preauth_list_error=False,
 ):
     calls: list[list[str]] = []
     # Sequence of payloads served by successive `users list -o json` calls;
@@ -135,6 +201,10 @@ def _wire_fake_headscale(
             if users_error:
                 return CommandResult(ok=False, exit_code=1, stdout="", stderr=users_error)
             return CommandResult(ok=True, exit_code=0, stdout="user created", stderr="")
+        if argv[:3] == ["headscale", "preauthkeys", "list"]:
+            if preauth_list_error:
+                raise CommandError("preauthkeys list exploded")
+            return CommandResult(ok=True, exit_code=0, stdout=preauth_list, stderr="")
         if argv[:2] == ["headscale", "preauthkeys"]:
             return CommandResult(ok=True, exit_code=0, stdout=f"Key: {key}\n", stderr="")
         if argv[:3] == ["headscale", "nodes", "list"]:
@@ -318,6 +388,57 @@ def test_enroll_503_when_headscale_missing(authed, monkeypatch):
     resp = test_client.post("/api/v1/household/enroll", headers=headers)
     assert resp.status_code == 503
     assert calls == [["headscale", "version"]]
+
+
+# --- enroll cap on outstanding join keys (M7) -------------------------------------
+
+
+def test_enroll_429_at_five_outstanding_keys(authed, monkeypatch):
+    test_client, headers = authed
+    outstanding = json.dumps([_preauth(i) for i in range(1, 6)])
+    calls = _wire_fake_headscale(monkeypatch, preauth_list=outstanding)
+    resp = test_client.post("/api/v1/household/enroll", headers=headers)
+    assert resp.status_code == 429
+    detail = resp.json()["detail"]
+    assert "5" in detail and "revoke" in detail.lower() and "expir" in detail.lower()
+    # The cap must gate the mint: no key was created.
+    assert all(argv[1:3] != ["preauthkeys", "create"] for argv in calls)
+
+
+def test_enroll_allows_four_outstanding_keys(authed, monkeypatch):
+    test_client, headers = authed
+    outstanding = json.dumps([_preauth(i) for i in range(1, 5)])
+    calls = _wire_fake_headscale(monkeypatch, preauth_list=outstanding)
+    resp = test_client.post("/api/v1/household/enroll", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["auth_key"] == PREAUTH_KEY
+    assert calls[-1] == [
+        "headscale",
+        "preauthkeys",
+        "create",
+        "--user",
+        "7",
+        "--expiration",
+        "24h",
+    ]
+
+
+def test_enroll_cap_skipped_when_listing_unparseable(authed, monkeypatch):
+    test_client, headers = authed
+    calls = _wire_fake_headscale(monkeypatch, preauth_list="not json at all")
+    resp = test_client.post("/api/v1/household/enroll", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["auth_key"] == PREAUTH_KEY
+    assert calls[-1][1:3] == ["preauthkeys", "create"]
+
+
+def test_enroll_cap_skipped_when_listing_command_fails(authed, monkeypatch):
+    test_client, headers = authed
+    calls = _wire_fake_headscale(monkeypatch, preauth_list_error=True)
+    resp = test_client.post("/api/v1/household/enroll", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["auth_key"] == PREAUTH_KEY
+    assert calls[-1][1:3] == ["preauthkeys", "create"]
 
 
 # --- /household/devices --------------------------------------------------------

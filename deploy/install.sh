@@ -18,7 +18,23 @@ if [ ! -d "${INSTALL_DIR}/venv" ]; then
   python3 -m venv "${INSTALL_DIR}/venv"
 fi
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade pip -q
-"${INSTALL_DIR}/venv/bin/pip" install -q "${REPO_DIR}"
+# Hash-pinned dependencies (audit M9): requirements-lock.txt pins every
+# dependency (and the setuptools/wheel build pair) with --hash=sha256 entries;
+# pip refuses any artifact whose digest does not match. The lock must cover
+# the arm64/amd64 manylinux wheels the Pi/NUC devices install from.
+# The holdfastbrick-api package itself is then installed with --no-deps from
+# the local checkout (it is not a PyPI artifact, so the lock cannot pin it).
+LOCK="${REPO_DIR}/requirements-lock.txt"
+if [ -f "${LOCK}" ]; then
+  "${INSTALL_DIR}/venv/bin/pip" install -q --require-hashes -r "${LOCK}"
+  "${INSTALL_DIR}/venv/bin/pip" install -q --no-deps --no-build-isolation "${REPO_DIR}"
+else
+  echo "!!! WARNING: ${LOCK} is missing — falling back to UNPINNED dependency"
+  echo "!!! resolution. This is not the supported install path: dependencies will"
+  echo "!!! be resolved live from PyPI with no integrity pinning. Restore or"
+  echo "!!! regenerate requirements-lock.txt (see deploy/PROVISIONING.md)."
+  "${INSTALL_DIR}/venv/bin/pip" install -q "${REPO_DIR}"
+fi
 
 if [ ! -f "${STATE_DIR}/.env" ]; then
   cat > "${STATE_DIR}/.env" <<'EOF'
@@ -72,7 +88,7 @@ systemctl enable holdfastbrick-api
 systemctl restart holdfastbrick-api
 
 echo
-echo "==> Holdfast API is running on port 8787."
+echo "==> Holdfast API is running on port 8787 (HTTPS, household CA server cert)."
 echo "==> To pair a phone, run:  holdfastbrick-pair"
 echo "==> To watch live logs, run:  holdfastbrick-logs   (or holdfastbrick-logs all)"
 echo

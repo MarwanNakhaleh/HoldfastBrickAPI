@@ -17,10 +17,16 @@ def client(tmp_path, monkeypatch):
 
     importlib.reload(config)
     from holdfastbrick_api import auth, main
+    from holdfastbrick_api.services import system
 
     importlib.reload(auth)
+    # system.py reads/writes the state store (confirm codes, reboot
+    # cooldown); it must rebind to the fresh one too.
+    importlib.reload(system)
     importlib.reload(main)
-    with TestClient(main.app) as test_client:
+    # Host "localhost" passes the DNS-rebinding guard; TestClient's default
+    # host ("testclient") is a public-style hostname and would be rejected.
+    with TestClient(main.app, base_url="http://localhost") as test_client:
         yield test_client, auth
 
 

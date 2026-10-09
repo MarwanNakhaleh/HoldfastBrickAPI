@@ -19,8 +19,12 @@ def client(tmp_path, monkeypatch):
     from holdfastbrick_api import auth, main
 
     importlib.reload(auth)
+    from holdfastbrick_api.services import system
+
+    importlib.reload(system)
     importlib.reload(main)
-    with TestClient(main.app) as test_client:
+    # Host "localhost" passes the DNS-rebinding guard (see conftest.py).
+    with TestClient(main.app, base_url="http://localhost") as test_client:
         yield test_client, auth
 
 

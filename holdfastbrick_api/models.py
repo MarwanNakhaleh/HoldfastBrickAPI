@@ -13,6 +13,9 @@ class PairRequest(BaseModel):
 class PairResponse(BaseModel):
     token: str
     device_name: str
+    # sha256 of the brick's TLS certificate; phones pin this at first pair.
+    # null when TLS is off (development).
+    cert_fingerprint: str | None = None
 
 
 class ServiceHealth(BaseModel):
@@ -42,3 +45,17 @@ class IdentityResponse(BaseModel):
     lan_ip: str
     tailscale_ips: list[str]
     magicdns_name: str
+
+
+class TokenInfo(BaseModel):
+    # Short hash of the token — never the token itself.
+    id: str
+    client_name: str
+    # Absent on tokens issued before this field existed; the app shows "—".
+    created_at: float | None = None
+
+
+class ConfirmCodeResponse(BaseModel):
+    # The code itself never travels over the wire: it is printed on the
+    # brick's console only, so physically being at the brick is the gate.
+    expires_at: str

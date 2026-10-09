@@ -8,8 +8,12 @@ JSON state file under ``/etc/holdfastbrick`` by default.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import re
 import secrets
+import time
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +77,48 @@ class Settings(BaseSettings):
     # upstream DNS isn't encrypted (e.g. --recursive mode).
     doh_service_unit: str = "unbound"
 
+    # TLS for the API itself (the household CA signs the server cert that
+    # provisioning puts next to it). HTTPS comes up only when both paths are
+    # set AND the files exist; setting either to an empty string disables TLS
+    # entirely (plain HTTP — useful in development).
+    tls_cert: str = "/etc/headscale/ca/server.crt"
+    tls_key: str = "/etc/headscale/ca/server.key"
+
+    # Extra Host header values the DNS-rebinding guard accepts, comma-separated
+    # (e.g. "holdfast.example.com,brick.home.arpa").
+    allowed_hosts: str = ""
+
+    def tls_enabled(self) -> bool:
+        """True when TLS material is configured and present on disk. When
+        False the API serves plain HTTP on the same port."""
+        if not (self.tls_cert and self.tls_key):
+            return False
+        return Path(self.tls_cert).exists() and Path(self.tls_key).exists()
+
+
+# sha256 over the DER form of the first PEM certificate in the file — the
+# standard "certificate fingerprint". Stdlib-only (no X.509 parsing needed).
+_PEM_CERT_RE = re.compile(
+    r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", re.S
+)
+
+
+def cert_fingerprint() -> str | None:
+    """sha256 hex of the API's TLS certificate, or None when TLS is disabled
+    or the certificate can't be read. Phones show this at first pair so the
+    user can pin the brick's identity."""
+    if not settings.tls_cert:
+        return None
+    try:
+        pem = Path(settings.tls_cert).read_text()
+    except OSError:
+        return None
+    match = _PEM_CERT_RE.search(pem)
+    if match is None:
+        return None
+    der = base64.b64decode("".join(match.group(1).split()))
+    return hashlib.sha256(der).hexdigest()
+
 
 settings = Settings()
 
@@ -113,7 +159,9 @@ class StateStore:
     def issue_token(self, client_name: str) -> str:
         self._load()
         token = secrets.token_urlsafe(32)
-        self.tokens[token] = {"client": client_name}
+        # created_at powers the token list in the app; missing on tokens
+        # issued by older versions — readers must tolerate that.
+        self.tokens[token] = {"client": client_name, "created_at": time.time()}
         self._save()
         return token
 
@@ -127,6 +175,46 @@ class StateStore:
     def is_valid_token(self, token: str) -> bool:
         self._load()
         return token in self.tokens
+
+    # --- pairing hardening ----------------------------------------------------
+    def record_pairing_failure(self) -> int:
+        """Count one wrong pairing code; returns the consecutive total."""
+        self._load()
+        count = int(self._data.get("pairing_failures", 0)) + 1
+        self._data["pairing_failures"] = count
+        self._save()
+        return count
+
+    def clear_pairing_failures(self) -> None:
+        self._load()
+        if self._data.pop("pairing_failures", None) is not None:
+            self._save()
+
+    # --- physical-presence confirmation (SSH key install) ----------------------
+    def set_confirm_code(self, code: str, expires_at: float) -> None:
+        self._load()
+        self._data["confirm_code"] = {"code": code, "expires_at": expires_at}
+        self._save()
+
+    def get_confirm_code(self) -> dict | None:
+        self._load()
+        return self._data.get("confirm_code")
+
+    def clear_confirm_code(self) -> None:
+        self._load()
+        if self._data.pop("confirm_code", None) is not None:
+            self._save()
+
+    # --- reboot cooldown -------------------------------------------------------
+    def get_last_reboot_at(self) -> float | None:
+        self._load()
+        value = self._data.get("last_reboot_at")
+        return float(value) if value is not None else None
+
+    def set_last_reboot_at(self, timestamp: float) -> None:
+        self._load()
+        self._data["last_reboot_at"] = timestamp
+        self._save()
 
     # --- pairing -------------------------------------------------------------
     def set_pairing(self, code: str, expires_at: float) -> None:

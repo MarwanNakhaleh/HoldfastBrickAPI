@@ -139,6 +139,6 @@ async def systemd_status(unit: str) -> dict:
 
 
 async def systemd_action(unit: str, action: str) -> CommandResult:
-    if action not in ("start", "stop", "restart"):
+    if action not in ("start", "stop", "restart", "reload"):
         raise CommandError(f"unsupported systemd action: {action}")
     return await run(["systemctl", action, unit], timeout=60.0)

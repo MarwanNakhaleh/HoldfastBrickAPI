@@ -27,6 +27,9 @@ router = APIRouter(prefix="/household", tags=["household"], dependencies=[Depend
 FAMILY_USER = "family"
 HEADSCALE_UNIT = "headscale"
 KEY_EXPIRATION_HOURS = 24
+# Outstanding (unused, unexpired) join keys allowed before minting more is
+# refused — each one is a 24-hour door into the household tailnet.
+ENROLL_OUTSTANDING_KEY_LIMIT = 5
 MOBILECONFIG_NAME = "holdfast-household-ca.mobileconfig"
 
 # `headscale nodes delete` may prompt for confirmation on the device. The
@@ -132,6 +135,69 @@ def extract_preauth_key(output: str) -> str:
         if match:
             return match.group(0)
     return ""
+
+
+def _key_expiration(value) -> datetime | None:
+    """`expiration` as an aware UTC datetime, or None when absent/unparseable.
+
+    Observed v0.29.4 shape is the protobuf timestamp object ({seconds,
+    nanos}); ISO strings are accepted for version drift. Callers treat None
+    as "unknown, assume outstanding" — the safe direction for a cap."""
+    if isinstance(value, dict):
+        try:
+            seconds = int(value.get("seconds") or 0)
+        except (TypeError, ValueError):
+            return None
+        if seconds <= 0:
+            return None
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def count_unused_preauth_keys(keys_json: str, user_id: int, now: datetime) -> int | None:
+    """Unused, unexpired preauth keys belonging to the family user.
+
+    Returns None when the listing can't be understood at all — the caller
+    then skips the cap rather than failing enrollment over it. A key whose
+    expiration is missing/unparseable still counts (assume outstanding).
+    """
+    try:
+        data = json.loads(keys_json)
+    except json.JSONDecodeError:
+        return None
+    if data is None:  # observed v0.29.4: an empty listing prints bare `null`
+        return 0
+    if isinstance(data, dict):
+        data = data.get("preAuthKeys")
+    if not isinstance(data, list):
+        return None
+    outstanding = 0
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        user = item.get("user")
+        if isinstance(user, dict):
+            user_value = user.get("id")
+        else:
+            user_value = user
+        try:
+            if int(user_value) != user_id:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if bool(item.get("used", False)):
+            continue
+        expiration = _key_expiration(item.get("expiration"))
+        if expiration is not None and expiration <= now:
+            continue
+        outstanding += 1
+    return outstanding
 
 
 # --- availability probing -----------------------------------------------------
@@ -244,11 +310,35 @@ async def _family_user_id() -> int:
 
 @router.post("/enroll")
 async def enroll(body: EnrollRequest | None = None) -> dict:
-    """Mint a single-use preauth key so one phone can join the household."""
+    """Mint a single-use preauth key so one phone can join the household.
+
+    Capped at ENROLL_OUTSTANDING_KEY_LIMIT unused, unexpired keys: each
+    outstanding key is a standing invitation into the household, so the
+    user is told to revoke or wait for expiry. If the key listing itself
+    can't be read, the cap is skipped — enrollment must not break over
+    housekeeping."""
     installed, running = await _probe()
     if not (installed and running):
         raise HTTPException(status_code=503, detail=_unavailable_detail(installed))
     user_id = await _family_user_id()
+    try:
+        listing = await run(
+            [settings.headscale_bin, "preauthkeys", "list", "-o", "json"]
+        )
+    except CommandError:
+        listing = None
+    if listing is not None and listing.ok:
+        outstanding = count_unused_preauth_keys(
+            listing.stdout, user_id, datetime.now(timezone.utc)
+        )
+        if outstanding is not None and outstanding >= ENROLL_OUTSTANDING_KEY_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"This household already has {outstanding} unused join keys "
+                    "waiting. Revoke or wait for expiry before minting another."
+                ),
+            )
     try:
         result = await run(
             [

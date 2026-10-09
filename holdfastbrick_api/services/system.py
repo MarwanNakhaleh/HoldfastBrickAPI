@@ -10,23 +10,44 @@ import base64
 import binascii
 import ipaddress
 import re
+import secrets
 import socket
 import struct
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from ..auth import require_token
-from ..config import settings
-from ..models import ActionResponse, ServiceHealth
-from ..runner import CommandError, run, systemd_status
+from ..auth import require_token, sliding_window_allowed
+from ..config import settings, state
+from ..models import ActionResponse, ConfirmCodeResponse, ServiceHealth
+from ..runner import CommandError, run, systemd_action, systemd_status
 
 router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_token)])
 
 ROUTE_FILE = Path("/proc/net/route")
 ARP_FILE = Path("/proc/net/arp")
 AUTHORIZED_KEYS_FILE = Path("/root/.ssh/authorized_keys")
+
+# Minutes a successful reboot request silences further ones.
+REBOOT_COOLDOWN_SECONDS = 600
+
+# The confirmation code shown at the brick before an SSH key may be installed.
+CONFIRM_CODE_TTL_SECONDS = 300
+# Drop-in that closes password logins once key access exists. Debian ships
+# an `Include /etc/ssh/sshd_config.d/*.conf` line in stock sshd_config.
+SSHD_HARDENING_FILE = Path("/etc/ssh/sshd_config.d/holdfast-hardening.conf")
+SSHD_HARDENING_CONTENT = "PasswordAuthentication no\n"
+SSHD_UNIT = "ssh"  # the sshd unit's name on Debian
+# Marks authorized_keys lines this API installed; removal drops exactly these.
+MANAGED_KEY_TAG = "# holdfastbrick-managed"
+
+
+def _now() -> float:
+    """Wall clock, indirected so tests can move time."""
+    return time.time()
 
 
 # --- default route / gateway (pure parsing, /proc only — no subprocess) ------
@@ -142,11 +163,28 @@ async def get_info() -> dict:
 
 @router.post("/reboot")
 async def reboot() -> ActionResponse:
-    """Reboot the Pi. The iOS app shows a confirmation dialog before calling."""
+    """Reboot the Pi. The iOS app shows a confirmation dialog before calling.
+
+    A stolen token must not be able to reboot-loop the household's DNS
+    resolver, so requests are cooled down: a second one within 10 minutes
+    of a successful reboot request is refused."""
+    last = state.get_last_reboot_at()
+    now = _now()
+    if last is not None and now - last < REBOOT_COOLDOWN_SECONDS:
+        minutes_left = max(1, round((REBOOT_COOLDOWN_SECONDS - (now - last)) / 60))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The brick was asked to reboot less than 10 minutes ago. "
+                f"If it's still misbehaving, try again in about {minutes_left} minutes."
+            ),
+        )
     try:
         result = await run(["shutdown", "-r", "+0"], timeout=10.0)
     except CommandError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    if result.ok:
+        state.set_last_reboot_at(now)
     return ActionResponse(ok=result.ok, message="Rebooting…" if result.ok else result.output)
 
 
@@ -332,20 +370,112 @@ def validate_ssh_ed25519_key(raw: str) -> str:
 
 class SshKeyRequest(BaseModel):
     public_key: str
+    confirm_code: str = ""
+
+
+# --- physical-presence confirmation -------------------------------------------
+
+@router.post("/confirm-code", response_model=ConfirmCodeResponse)
+async def create_confirm_code() -> ConfirmCodeResponse:
+    """Mint the 6-digit confirmation code that POST /system/ssh-key demands.
+
+    The code is printed on the brick's console (and lands in its service
+    journal) only — this response never carries it. That is the point: the
+    bearer token alone must not be enough to install a root SSH key, so
+    being physically at the brick is the second gate. Read the code off the
+    brick and post it with your public key within 5 minutes. Single use."""
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = _now() + CONFIRM_CODE_TTL_SECONDS
+    state.set_confirm_code(code, expires_at)
+    print()
+    print("  ┌────────────────────────────────────────┐")
+    print("  │         Holdfast confirmation          │")
+    print("  │                                        │")
+    print(f"  │        Code:  {code[:3]} {code[3:]}                  │")
+    print("  │                                        │")
+    print("  │   Enter this in the app to install     │")
+    print("  │   an SSH key. 5 minutes. Single use.   │")
+    print("  └────────────────────────────────────────┘")
+    print()
+    return ConfirmCodeResponse(
+        expires_at=datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+    )
+
+
+def _consume_confirm_code(code: str) -> bool:
+    """True when ``code`` matches the minted, unexpired confirmation code.
+    Single use: a matching code is consumed immediately, so replaying it —
+    even seconds later — fails."""
+    stored = state.get_confirm_code()
+    if not stored:
+        return False
+    if _now() > float(stored.get("expires_at", 0)):
+        state.clear_confirm_code()
+        return False
+    if not secrets.compare_digest(str(stored.get("code", "")), code):
+        return False
+    state.clear_confirm_code()
+    return True
+
+
+# --- sshd password-auth hardening ----------------------------------------------
+
+def sshd_hardening_applied() -> bool:
+    """Whether the drop-in is on disk exactly as this API writes it."""
+    try:
+        return (
+            SSHD_HARDENING_FILE.exists()
+            and SSHD_HARDENING_FILE.read_text() == SSHD_HARDENING_CONTENT
+        )
+    except OSError:
+        return False
+
+
+def write_sshd_hardening() -> bool:
+    """Write the drop-in that turns off SSH password authentication.
+
+    Idempotent: returns True only when the file was actually (re)written so
+    the caller can reload sshd just on real changes. False — including on a
+    write failure — never blocks the key install itself; the drop-in will
+    apply on sshd's next restart instead."""
+    try:
+        if sshd_hardening_applied():
+            return False
+        SSHD_HARDENING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SSHD_HARDENING_FILE.with_name(SSHD_HARDENING_FILE.name + ".tmp")
+        tmp.write_text(SSHD_HARDENING_CONTENT)
+        tmp.replace(SSHD_HARDENING_FILE)
+        return True
+    except OSError:
+        return False
 
 
 def build_authorized_line(key: str, client_ip: str) -> str:
     """The authorized_keys entry for ``key``: source-restricted to the
     installing device's IP when we know it. The IP is validated (it must
     parse as an address) before being placed inside the from= option, so
-    nothing attacker-shaped can extend the option list."""
-    if not client_ip:
-        return key
-    try:
-        ipaddress.ip_address(client_ip)
-    except ValueError:
-        return key
-    return f'from="{client_ip}" {key}'
+    nothing attacker-shaped can extend the option list. Every line we
+    install carries a trailing tag so DELETE /system/ssh-key can remove
+    exactly our lines and nothing else."""
+    line = key
+    if client_ip:
+        try:
+            ipaddress.ip_address(client_ip)
+        except ValueError:
+            pass
+        else:
+            line = f'from="{client_ip}" {key}'
+    return f"{line} {MANAGED_KEY_TAG}"
+
+
+def remove_authorized_lines(existing: str, tag: str = MANAGED_KEY_TAG) -> tuple[str, int]:
+    """authorized_keys text without any line carrying ``tag``.
+
+    Returns (remaining_text, lines_removed). Lines installed any other way —
+    by hand, or by app versions before tagging existed — are preserved."""
+    entries = existing.splitlines()
+    kept = [entry for entry in entries if tag not in entry]
+    return ("\n".join(kept) + "\n" if kept else ""), len(entries) - len(kept)
 
 
 def merge_authorized_keys(existing: str, blob: str, line: str) -> tuple[str | None, str]:
@@ -381,22 +511,57 @@ def merge_authorized_keys(existing: str, blob: str, line: str) -> tuple[str | No
 @router.post("/ssh-key")
 async def install_ssh_key(body: SshKeyRequest, request: Request) -> ActionResponse:
     """Install an ed25519 public key for root SSH access (power-user escape
-    hatch, gated behind pairing auth). The key is source-restricted via
-    from= to the caller's IP — re-posting from a new address moves the
-    restriction along."""
+    hatch). Two gates: the standing bearer token, and fresh proof someone is
+    at the brick — a 6-digit confirmation code minted by
+    POST /system/confirm-code and shown only on the brick's console.
+
+    The key is source-restricted via from= to the caller's IP — re-posting
+    from a new address moves the restriction along. The first install also
+    writes the sshd drop-in that turns password authentication off and
+    reloads ssh;     later installs keep that drop-in in place, never duplicated."""
+    # The confirmation code is a 6-digit secret with a 5-minute life, so the
+    # install endpoint gets the same per-address sliding window as pairing;
+    # without it, a stolen token could grind through the code's keyspace.
+    source_ip = request.client.host if request.client else ""
+    if not sliding_window_allowed(f"ssh-key:{source_ip}"):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many confirmation attempts from your address. Wait a "
+                "minute and try again."
+            ),
+        )
     try:
         key = validate_ssh_ed25519_key(body.public_key)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"Not a valid ed25519 public key: {exc}")
     # Dedupe on type + base64 blob, ignoring the comment.
     blob = " ".join(key.split(" ")[:2])
+    existing = ""
+    try:
+        existing = AUTHORIZED_KEYS_FILE.read_text() if AUTHORIZED_KEYS_FILE.exists() else ""
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Couldn't read authorized_keys: {exc}")
+    # Fresh proof of physical presence gates NEW credentials only: re-posting
+    # a key that is already installed just moves its from= restriction to the
+    # caller's current address (the connect flow does this on every IP
+    # change), and demanding a console code there would make the console
+    # unusable away from the brick.
+    if blob not in existing and not _consume_confirm_code(body.confirm_code):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Missing or wrong confirmation code. Read the code shown on "
+                "the brick (mint a fresh one in the app) and try again "
+                "within 5 minutes."
+            ),
+        )
     client_ip = request.client.host if request.client else ""
     line = build_authorized_line(key, client_ip)
     try:
         ssh_dir = AUTHORIZED_KEYS_FILE.parent
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         ssh_dir.chmod(0o700)
-        existing = AUTHORIZED_KEYS_FILE.read_text() if AUTHORIZED_KEYS_FILE.exists() else ""
         content, message = merge_authorized_keys(existing, blob, line)
         if content is not None:
             # tmp + rename: an interrupted write must never truncate
@@ -408,4 +573,39 @@ async def install_ssh_key(body: SshKeyRequest, request: Request) -> ActionRespon
         AUTHORIZED_KEYS_FILE.chmod(0o600)
     except OSError as exc:
         raise HTTPException(status_code=503, detail=f"Couldn't write authorized_keys: {exc}")
+    if write_sshd_hardening():
+        try:
+            await systemd_action(SSHD_UNIT, "reload")
+        except CommandError:
+            message += (
+                " (couldn't reload the SSH service; the change applies on "
+                "its next restart)"
+            )
     return ActionResponse(ok=True, message=message)
+
+
+@router.delete("/ssh-key")
+async def delete_ssh_key() -> ActionResponse:
+    """Remove every authorized_keys line this API installed (exactly the
+    lines tagged '# holdfastbrick-managed') and report how many. Keys
+    installed by hand — including by app versions before tagging existed —
+    are left alone."""
+    try:
+        existing = (
+            AUTHORIZED_KEYS_FILE.read_text() if AUTHORIZED_KEYS_FILE.exists() else ""
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Couldn't read authorized_keys: {exc}")
+    remaining, removed = remove_authorized_lines(existing)
+    if removed:
+        try:
+            tmp = AUTHORIZED_KEYS_FILE.with_name("authorized_keys.holdfastbrick-tmp")
+            tmp.write_text(remaining)
+            tmp.chmod(0o600)
+            tmp.replace(AUTHORIZED_KEYS_FILE)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail=f"Couldn't write authorized_keys: {exc}")
+    return ActionResponse(
+        ok=True,
+        message=f"Removed {removed} holdfastbrick-managed SSH key line(s).",
+    )

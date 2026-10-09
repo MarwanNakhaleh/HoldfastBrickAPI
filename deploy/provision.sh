@@ -33,6 +33,14 @@ export DEBIAN_FRONTEND=noninteractive
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── Pinned upstream installer (audit M1) ─────────────────────────────────────
+# The AdGuard Home installer script is fetched from a fixed, reviewed release
+# tag instead of the mutable master branch — never execute a moving target as
+# root. Re-check the tag whenever AdGuard ships a release (the patch SLA
+# cadence: review the release notes, bump, re-run). Env var overrides.
+# Checked 2026-10-09 against api.github.com AdguardTeam/AdGuardHome latest.
+ADGUARD_INSTALLER_TAG="${ADGUARD_INSTALLER_TAG:-v0.107.79}"
+
 # ── Ports used by the stack (env vars supply defaults, flags override) ───────
 # For the AdGuard ports we track whether the user chose them explicitly:
 # if not, a re-run ADOPTS whatever ports the wizard/user already configured
@@ -184,12 +192,63 @@ tailscale_control_url() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 0/10: Preflight — base packages, detect environment"
+stage "Stage 0/10: Preflight — base packages, SSH hardening, detect environment"
 # ─────────────────────────────────────────────────────────────────────────────
 apt-get update -qq
 apt-get install -y -qq curl wget ca-certificates gnupg apt-transport-https \
   dnsutils python3 python3-yaml python3-bcrypt
 note "Architecture: ${ARCH}, Debian codename: ${CODENAME}"
+
+# Base SSH hardening (audit H4) via a drop-in. Both Debian and Raspberry Pi OS
+# (bookworm) ship `Include /etc/ssh/sshd_config.d/*.conf` as the FIRST line of
+# /etc/ssh/sshd_config, so drop-ins are read before the main file's own
+# directives win the first-match race. That Include is verified below rather
+# than assumed — if it is missing the drop-in would be inert and silently give
+# false confidence, so we skip with a warning instead.
+# Deliberately NOT set here: PasswordAuthentication. The app's Remote Console
+# flow installs a root SSH key on first pairing and then turns passwords off
+# itself; hardening it here would lock the very first key install out.
+# DietPi devices that run Dropbear instead of OpenSSH skip this block (Dropbear
+# has its own config; X11Forwarding/MaxAuthTries are OpenSSH directives).
+SSH_DROPIN=/etc/ssh/sshd_config.d/holdfast-base.conf
+if [ -x /usr/sbin/sshd ]; then
+  if grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d' /etc/ssh/sshd_config 2>/dev/null; then
+    SSH_PREV="$(mktemp)"
+    [ -f "$SSH_DROPIN" ] && cp -a "$SSH_DROPIN" "$SSH_PREV"
+    write_config "$SSH_DROPIN" <<'EOF'
+# Installed by Holdfast provision.sh — base SSH hardening (audit H4).
+# PasswordAuthentication is handled by the Holdfast API after the first SSH
+# key is installed (see PROVISIONING.md), so it is deliberately not set here.
+X11Forwarding no
+MaxAuthTries 4
+EOF
+    if [ "$CONFIG_CHANGED" -eq 1 ]; then
+      if SSHD_ERR="$(sshd -t 2>&1)"; then
+        note "SSH drop-in installed and validated (sshd -t): X11Forwarding no, MaxAuthTries 4."
+        if systemctl is-active --quiet ssh 2>/dev/null; then
+          systemctl reload ssh || true
+        fi
+      else
+        note "WARNING: sshd -t rejected the drop-in — rolling back. Output below."
+        printf '%s\n' "$SSHD_ERR" | sed 's/^/    | /'
+        if [ -f "$SSH_PREV" ]; then
+          cp -a "$SSH_PREV" "$SSH_DROPIN"
+        else
+          rm -f "$SSH_DROPIN"
+        fi
+        sshd -t 2>/dev/null || note "WARNING: sshd config still invalid after rollback — inspect /etc/ssh/ manually."
+      fi
+    else
+      note "SSH drop-in already installed and current."
+    fi
+    rm -f "$SSH_PREV"
+  else
+    note "WARNING: /etc/ssh/sshd_config has no 'Include /etc/ssh/sshd_config.d' line —"
+    note "         SSH drop-ins would be ignored. Base SSH hardening skipped; check this OS's sshd packaging."
+  fi
+else
+  note "No OpenSSH server installed (DietPi may run Dropbear) — nothing to harden yet."
+fi
 
 DEFAULT_IFACE="$(ip route show default 2>/dev/null | awk '/^default/ {print $5; exit}')"
 DEFAULT_IFACE="${DEFAULT_IFACE:-eth0}"
@@ -215,7 +274,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 2/10: Unbound (apt) on 127.0.0.1:${UNBOUND_PORT}"
+stage "Stage 2/10: Unbound + encrypted DNS on 127.0.0.1:${UNBOUND_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 if command -v unbound >/dev/null 2>&1; then
   note "Unbound already installed — skipping install."
@@ -302,13 +361,10 @@ fi
 ensure_service unbound "$CONFIG_CHANGED"
 note "Unbound on 127.0.0.1:${UNBOUND_PORT}."
 
-# ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 3/10: Encrypted DNS — Unbound DoT (remove legacy cloudflared, if any)"
-# ─────────────────────────────────────────────────────────────────────────────
-# Encrypted DNS is provided by Unbound's native DNS-over-TLS forwarding
-# (configured in Stage 2). cloudflared's proxy-dns mode — which earlier
-# versions of this script installed here — was discontinued upstream in
-# Nov 2025, so any leftover install from a previous run is retired.
+# Retire any leftover Holdfast cloudflared unit: encrypted DNS is provided by
+# Unbound's native DNS-over-TLS forwarding (configured above), and cloudflared's
+# proxy-dns mode was discontinued upstream in Nov 2025. Earlier versions of
+# this script installed cloudflared here, so re-runs clean it up.
 if [ -f /etc/systemd/system/cloudflared.service ] \
    && grep -qE "(Privacy|Holdfast)Brick provision.sh" /etc/systemd/system/cloudflared.service; then
   systemctl disable --now cloudflared >/dev/null 2>&1 || true
@@ -321,7 +377,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 4/10: AdGuard Home (official installer) — DNS :${ADGUARD_DNS_PORT}, UI :${ADGUARD_UI_PORT}"
+stage "Stage 3/10: AdGuard Home (official installer) — DNS :${ADGUARD_DNS_PORT}, UI :${ADGUARD_UI_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 # AdGuard may already be installed several ways (this script's official
 # installer, DietPi's dietpi-software package, a manual install), each with
@@ -374,8 +430,13 @@ if [ -n "$AGH_UNIT" ]; then
   note "AdGuard Home service detected: ${AGH_UNIT} — skipping installer."
   note "AdGuard config: ${AGH_YAML:-not found yet (wizard not completed)}"
 else
-  # Official script per https://github.com/AdguardTeam/AdGuardHome
-  curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
+  # Official script per https://github.com/AdguardTeam/AdGuardHome, fetched
+  # from the pinned release tag ADGUARD_INSTALLER_TAG (audit M1) — the master
+  # branch is a moving target and this runs as root. The tag is re-reviewed at
+  # each AdGuard release per the patch SLA; override via env if needed.
+  curl -s -S -L --max-time 60 \
+    "https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/${ADGUARD_INSTALLER_TAG}/scripts/install.sh" \
+    | sh -s -- -v
   AGH_UNIT="AdGuardHome"
   if [ -z "$AGH_YAML" ] && [ -f /opt/AdGuardHome/AdGuardHome.yaml ]; then
     AGH_YAML=/opt/AdGuardHome/AdGuardHome.yaml
@@ -474,7 +535,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 5/10: ntopng on :${NTOPNG_PORT} (packages.ntop.org if reachable, else Debian)"
+stage "Stage 4/10: ntopng on 127.0.0.1:${NTOPNG_PORT} (packages.ntop.org if reachable, else Debian)"
 # ─────────────────────────────────────────────────────────────────────────────
 NTOP_SOURCE="Debian apt"
 if ! command -v ntopng >/dev/null 2>&1; then
@@ -507,10 +568,14 @@ else
 fi
 
 mkdir -p /etc/ntopng
+# Loopback-only bind (audit M5): ntopng's web/REST UI ships with no configured
+# auth, so it is never exposed on the LAN. The household UI goes through the
+# authenticated Holdfast API, which proxies ntopng's REST interface on 127.0.0.1.
 write_config /etc/ntopng/ntopng.conf <<EOF
 # Installed by Holdfast provision.sh.
-# Web/REST UI on ${NTOPNG_PORT} (AdGuard Home owns 3000), monitoring ${DEFAULT_IFACE}.
--w=${NTOPNG_PORT}
+# Web/REST UI bound to 127.0.0.1 only (audit M5); the Holdfast API proxies it.
+# Direct LAN access is blocked by the nftables stage (and by the bind itself).
+-w=127.0.0.1:${NTOPNG_PORT}
 -i=${DEFAULT_IFACE}
 EOF
 # Debian's packaging wants this marker before it will start the service.
@@ -522,10 +587,10 @@ if [ "$CONFIG_CHANGED" -eq 1 ] || ! systemctl is-active --quiet ntopng; then
 else
   note "ntopng already configured and running — skipping restart."
 fi
-note "ntopng (${NTOP_SOURCE}) on http://${PI_IP}:${NTOPNG_PORT}, monitoring ${DEFAULT_IFACE}."
+note "ntopng (${NTOP_SOURCE}) on 127.0.0.1:${NTOPNG_PORT} (loopback only — UI via the API), monitoring ${DEFAULT_IFACE}."
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 6/10: NextDNS CLI on 127.0.0.1:${NEXTDNS_PORT} (installed, NOT activated)"
+stage "Stage 5/10: NextDNS CLI on 127.0.0.1:${NEXTDNS_PORT} (installed, NOT activated)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Install straight from NextDNS's own apt repo (repo.nextdns.io). The
 # nextdns.io installer script is interactive even under RUN_COMMAND=install —
@@ -570,7 +635,7 @@ if command -v nextdns >/dev/null 2>&1; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 7/10: Tailscale (official apt repo)"
+stage "Stage 6/10: Tailscale (official apt repo)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Official repo per https://pkgs.tailscale.com/stable/ (bookworm).
 if command -v tailscale >/dev/null 2>&1; then
@@ -607,7 +672,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 8/10: Headscale — household VPN control plane (official DEB) on :${HEADSCALE_PORT}"
+stage "Stage 7/10: Headscale — household VPN control plane (official DEB, checksum-verified) on :${HEADSCALE_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 # Self-hosted Tailscale control plane: family phones run the official
 # Tailscale apps pointed at the brick. TLS terminates on headscale itself with
@@ -655,12 +720,40 @@ if [ "$HS_ARCH_OK" -eq 1 ]; then
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -1 || true)"
   fi
   if [ -n "$HS_TARGET" ] && [ "$HS_INSTALLED" != "$HS_TARGET" ]; then
+    # Integrity gate (audit M1): the DEB is installed only after its sha256
+    # matches the release's checksums.txt (same release URL base, fetched over
+    # GitHub TLS). Mismatch or missing checksum = fail closed with the same
+    # graceful-skip philosophy as an unreachable GitHub: warn, set
+    # HEADSCALE_PENDING, install nothing.
     TMPDEB="$(mktemp --suffix=.deb)"
+    TMPCHK="$(mktemp)"
+    HS_DEB_NAME="headscale_${HS_TARGET}_linux_${ARCH}.deb"
+    HS_SHA_OK=0
+    set +e
     curl -fsSL --max-time 120 -o "$TMPDEB" \
-      "https://github.com/juanfont/headscale/releases/download/v${HS_TARGET}/headscale_${HS_TARGET}_linux_${ARCH}.deb"
-    dpkg -i "$TMPDEB" || apt-get install -y -qq -f
-    rm -f "$TMPDEB"
-    note "Installed headscale ${HS_TARGET} (${ARCH}) from the official DEB."
+      "https://github.com/juanfont/headscale/releases/download/v${HS_TARGET}/${HS_DEB_NAME}"
+    HS_DEB_RC=$?
+    curl -fsSL --max-time 60 -o "$TMPCHK" \
+      "https://github.com/juanfont/headscale/releases/download/v${HS_TARGET}/checksums.txt"
+    HS_CHK_RC=$?
+    set -e
+    if [ "$HS_DEB_RC" -eq 0 ] && [ "$HS_CHK_RC" -eq 0 ]; then
+      HS_EXPECTED="$(awk -v f="$HS_DEB_NAME" '$2==f {print $1; exit}' "$TMPCHK")"
+      HS_ACTUAL="$(sha256sum "$TMPDEB" 2>/dev/null | awk '{print $1}')"
+      if [ -n "$HS_EXPECTED" ] && [ -n "$HS_ACTUAL" ] && [ "$HS_EXPECTED" = "$HS_ACTUAL" ]; then
+        HS_SHA_OK=1
+      fi
+    fi
+    if [ "$HS_SHA_OK" -eq 1 ]; then
+      dpkg -i "$TMPDEB" || apt-get install -y -qq -f
+      note "Installed headscale ${HS_TARGET} (${ARCH}) — sha256 verified against checksums.txt."
+    else
+      HEADSCALE_PENDING=1
+      note "WARNING: could not verify headscale ${HS_TARGET} against its checksums.txt — NOT installing."
+      note "         (checksums.txt missing, entry missing, or sha256 mismatch). Re-run provision.sh to"
+      note "         retry, or set HEADSCALE_VERSION=<version> to pin a specific release."
+    fi
+    rm -f "$TMPDEB" "$TMPCHK"
   elif [ -n "$HS_INSTALLED" ]; then
     note "Headscale ${HS_INSTALLED} already installed and current — skipping download."
   fi
@@ -828,7 +921,23 @@ EOF
     HS_CFG_CHANGED=$CONFIG_CHANGED
 
     # The service runs as the DEB's headscale user: it must read the TLS key.
-    chown -R headscale:headscale "$HS_CA_DIR"
+    # Ownership is per-file on purpose (audit H3): ONLY the files headscale
+    # actually reads — server.crt/server.key and their .bak siblings — are
+    # headscale-owned. The CA private key (ca.key) and ca.srl stay root:root,
+    # so one headscale-service compromise can no longer sign household-wide
+    # MITM certificates against the CA phones trust at full trust. The sweep
+    # below converges any state left by older versions (which chown'd -R).
+    for f in "${HS_CA_DIR}"/*; do
+      [ -e "$f" ] || continue
+      case "$(basename "$f")" in
+        server.crt|server.key|server.crt.bak.*|server.key.bak.*)
+          chown headscale:headscale "$f" ;;
+        *)
+          chown root:root "$f" ;;
+      esac
+    done
+    chown root:root "$HS_CA_DIR"
+    chmod 755 "$HS_CA_DIR"
     chmod 600 "${HS_CA_DIR}/ca.key" "${HS_CA_DIR}/server.key"
     chmod 644 "${HS_CA_DIR}/ca.crt" "${HS_CA_DIR}/server.crt" \
               "${HS_CA_DIR}/holdfast-household-ca.mobileconfig"
@@ -933,6 +1042,136 @@ EOF
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+stage "Stage 8/10: Host firewall — nftables (LAN service ports only, tailnet open)"
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimal host firewall (audit M5): input is default-drop. Everything the
+# brick legitimately serves is allowed, and management/service ports only from
+# RFC1918 LAN sources; anything arriving over the tailnet interfaces is trusted
+# (the household VPN is authenticated). Output and forwarding stay
+# unrestricted — this brick is the household DNS/router, egress must not break.
+# Port notes:
+#   443   headscale — family phones reach https://<pi-ip> from the LAN to
+#         enroll and to reach the control plane (not in the audit's original
+#         port list, but without it the household VPN breaks).
+#   5353  mDNS — the iOS app discovers the brick via _holdfastbrick._tcp
+#         (zeroconf); without inbound mDNS the app never finds a fresh brick.
+#   Tailscale's WireGuard transport needs no inbound allow: the brick's own
+#         outbound probes open the conntrack entry, and DERP relays cover the
+#         rest (tailscale's documented no-port-forwarding operation).
+# SAFETY: the ruleset is validated with `nft -c -f` BEFORE it is installed;
+# validation failure (or a ruleset that cannot even be parsed here) means the
+# stage warns and skips — a bad ruleset must never lock a household out.
+NFT_CONF=/etc/nftables.conf
+NFT_CONF_DIR=/etc/nftables.d
+NFT_CHANGED=0
+if ! command -v nft >/dev/null 2>&1; then
+  apt-get install -y -qq nftables
+fi
+
+# Debian and Raspberry Pi OS ship /etc/nftables.conf WITHOUT any include line,
+# so wire one in if it is missing (idempotent, backed up like every config).
+if [ ! -f "$NFT_CONF" ]; then
+  write_config "$NFT_CONF" <<EOF
+#!/usr/sbin/nft -f
+flush ruleset
+
+include "${NFT_CONF_DIR}/*.nft"
+EOF
+  NFT_CHANGED=1
+elif ! grep -qE '^[[:space:]]*include[[:space:]].*nftables\.d' "$NFT_CONF"; then
+  BAK="${NFT_CONF}.bak.$(date +%s)"
+  cp -a "$NFT_CONF" "$BAK"
+  BACKED_UP+=("$BAK")
+  note "Backed up existing $NFT_CONF to $BAK"
+  printf '\n# Holdfast firewall rulesets (audit M5)\ninclude "%s/*.nft"\n' "$NFT_CONF_DIR" >> "$NFT_CONF"
+  NFT_CHANGED=1
+  note "Added include line for ${NFT_CONF_DIR} to ${NFT_CONF}."
+fi
+
+mkdir -p "$NFT_CONF_DIR"
+write_config "${NFT_CONF_DIR}/holdfast.nft" <<'EOF'
+#!/usr/sbin/nft -f
+# Installed by Holdfast provision.sh — household brick firewall (audit M5).
+# Input is default-drop: loopback, established/related, ping + PMTU, DHCP,
+# IGMP, mDNS, the tailnet interfaces, and the brick's LAN services (from
+# RFC1918 sources only) are allowed. Output and forwarding are unrestricted.
+
+table inet holdfast {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iifname "lo" accept
+        ct state established,related accept
+
+        # Tailnet traffic is authenticated by the household VPN itself.
+        iifname { "tailscale0", "wg0" } accept
+
+        # DHCP: client role (replies from the router) and, for the future
+        # DHCP-takeover feature, server role (requests from LAN clients).
+        udp sport 67 udp dport 68 accept
+        udp sport 68 udp dport 67 accept
+
+        # LAN multicast group management
+        ip protocol igmp accept
+
+        # ping + path-MTU discovery (v4), plus the v6 set: echo, PMTU, and
+        # IPv6 neighbor/router discovery, without which IPv6 breaks entirely.
+        icmp type { echo-request, destination-unreachable, time-exceeded } accept
+        icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+
+        # mDNS: the iOS app's _holdfastbrick._tcp discovery
+        udp dport 5353 accept
+
+        # Everything the brick serves to the household LAN, RFC1918 only:
+        # ssh 22, DNS 53 (udp+tcp), headscale 443, AdGuard UI 3000, API 8787.
+        # (ntopng 3001 is deliberately absent: it binds to loopback only.)
+        ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 22, 53, 443, 3000, 8787 } accept
+        ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 53 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+EOF
+NFT_CHANGED=$(( NFT_CHANGED + CONFIG_CHANGED ))
+
+NFT_OK=0
+if NFT_ERR="$(nft -c -f "${NFT_CONF_DIR}/holdfast.nft" 2>&1)"; then
+  NFT_OK=1
+else
+  case "$NFT_ERR" in
+    *"Permission denied"*|*"Operation not permitted"*|*"cache initialization failed"*)
+      note "WARNING: cannot validate the ruleset in this environment (no kernel netlink access)."
+      note "         Firewall NOT enabled — re-run provision.sh on the device itself to apply it."
+      ;;
+    *)
+      note "WARNING: nft rejected the ruleset — firewall NOT enabled. Output below."
+      printf '%s\n' "$NFT_ERR" | sed 's/^/    | /'
+      ;;
+  esac
+fi
+
+if [ "$NFT_OK" -eq 1 ]; then
+  systemctl enable nftables >/dev/null 2>&1 || true
+  if [ "$NFT_CHANGED" -ge 1 ] || ! systemctl is-active --quiet nftables; then
+    systemctl restart nftables || note "WARNING: nftables.service failed to start — rules unchanged; check 'journalctl -u nftables'."
+  else
+    note "nftables already configured and running — skipping restart."
+  fi
+  if nft list ruleset 2>/dev/null | grep -q 'table inet holdfast'; then
+    note "Firewall active: input default-drop, LAN service ports + tailnet allowed."
+    note "Inspect anytime with:  sudo nft list ruleset"
+  else
+    note "WARNING: 'table inet holdfast' not found in the live ruleset — check 'systemctl status nftables'."
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 stage "Stage 9/10: Unattended security updates (Debian) — security origin only"
 # ─────────────────────────────────────────────────────────────────────────────
 # Patch SLA (docs/requirements-home-server-v1.md): critical CVEs patched within
@@ -981,6 +1220,12 @@ set_env_kv "$ENV_FILE" HOLDFASTBRICK_ADGUARD_URL "http://127.0.0.1:${ADGUARD_UI_
 set_env_kv "$ENV_FILE" HOLDFASTBRICK_NTOPNG_URL "http://127.0.0.1:${NTOPNG_PORT}"
 set_env_kv "$ENV_FILE" HOLDFASTBRICK_HEADSCALE_URL "${HS_SERVER_URL}"
 set_env_kv "$ENV_FILE" HOLDFASTBRICK_PORT "${API_PORT}"
+# TLS on the API (audit S1, provisioning half): the API terminates HTTPS with
+# the household CA's server cert — the same pair the headscale unit serves.
+# The systemd unit carries the same paths as Environment= lines; the API reads
+# them itself (no flag plumbing here).
+set_env_kv "$ENV_FILE" HOLDFASTBRICK_TLS_CERT "/etc/headscale/ca/server.crt"
+set_env_kv "$ENV_FILE" HOLDFASTBRICK_TLS_KEY "/etc/headscale/ca/server.key"
 # Encrypted DNS is carried by Unbound (DoT) in forward mode; in --recursive
 # mode upstream traffic is plain DNS to the authoritative servers, so no
 # unit legitimately represents "Encrypted DNS".
@@ -1063,11 +1308,12 @@ cat <<EOF
     AdGuard Home     DNS :${ADGUARD_DNS_PORT} (LAN)      web UI http://${PI_IP}:${ADGUARD_UI_PORT}
     Unbound          127.0.0.1:${UNBOUND_PORT}$( [ "$RECURSIVE" -eq 1 ] && echo "  (full recursion)" || echo "  (DNS-over-TLS upstream)" )
     NextDNS CLI      127.0.0.1:${NEXTDNS_PORT}  (standby — NOT in the chain)
-    ntopng           http://${PI_IP}:${NTOPNG_PORT}
+    ntopng           127.0.0.1:${NTOPNG_PORT}  (loopback only — household UI via the API)
     Headscale        ${HS_SERVER_URL}  ${HS_SUMMARY}
     Tailscale        $( [ "$TAILSCALE_PENDING" -eq 1 ] && echo "LOGIN PENDING — run: sudo tailscale up" || echo "up ($(tailscale ip -4 2>/dev/null | head -1))" )
+    Firewall         nftables 'inet holdfast' — input default-drop, LAN service ports + tailnet only
     OS security      unattended-upgrades, ${CODENAME}-security origin only (daily)
-    Holdfast API http://${PI_IP}:${API_PORT}  (pairing code printed above)
+    Holdfast API https://${PI_IP}:${API_PORT}  (household CA cert; pairing code printed above)
 
   Still to do (manual):
 EOF
@@ -1111,6 +1357,9 @@ if [ "$HS_CONFIGURED" -eq 1 ]; then
   echo "          ${HS_SERVER_URL}, then finish the login page it opens: run the"
   echo "          'headscale nodes register --user family <key>' command it shows, on the brick."
 fi
+echo "    6. Firewall check:  sudo nft list ruleset   (table 'inet holdfast' must be"
+echo "       listed; input is default-drop except the brick's LAN service ports, mDNS,"
+echo "       DHCP, ping/PMTU and the tailnet interfaces)."
 if [ "${#BACKED_UP[@]}" -gt 0 ]; then
   echo
   echo "  Config backups made this run:"

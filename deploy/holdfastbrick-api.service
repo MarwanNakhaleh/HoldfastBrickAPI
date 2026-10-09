@@ -9,6 +9,12 @@ Type=simple
 # The API itself only exposes a curated, allowlisted set of operations.
 User=root
 EnvironmentFile=-/etc/holdfastbrick/.env
+# TLS (audit S1, provisioning half): the API serves HTTPS on its normal port
+# with the household CA's server certificate — the same pair headscale uses.
+# Paths match /etc/headscale/ca ownership as provisioned (server.crt/server.key
+# are headscale-owned; the API runs as root and can read them).
+Environment=HOLDFASTBRICK_TLS_CERT=/etc/headscale/ca/server.crt
+Environment=HOLDFASTBRICK_TLS_KEY=/etc/headscale/ca/server.key
 ExecStart=/opt/holdfastbrick/venv/bin/holdfastbrick-api
 Restart=on-failure
 RestartSec=5
