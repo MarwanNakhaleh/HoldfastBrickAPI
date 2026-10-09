@@ -22,12 +22,23 @@ config file it would change is backed up first as `<file>.bak.<epoch>`.
 | Tailscale | Tailscale apt repo (`pkgs.tailscale.com/stable/debian`, bookworm) |
 | Headscale | official DEB from GitHub releases (`github.com/juanfont/headscale`, arm64/amd64) |
 | ntopng | ntop apt repo (`packages.ntop.org`) if reachable, else Debian apt |
-| NextDNS CLI | official installer (`nextdns.io/install`) |
+| NextDNS CLI | NextDNS apt repo (`repo.nextdns.io`) — the interactive `nextdns.io/install` script is never used (it wedges headless devices) |
+| Unattended security updates | Debian `unattended-upgrades` (security origin only) |
 | Holdfast API | this repo, via `deploy/install.sh` (invoked at the end) |
 
 It also disables `systemd-resolved`'s stub listener if present (to free
 port 53) and runs `unbound-control-setup` (the API drives Unbound through
 `unbound-control`).
+
+**Security patches apply on their own.** The script installs
+`unattended-upgrades` and configures `APT::Periodic` to refresh the package
+list and run the upgrade daily, while `/etc/apt/apt.conf.d/50holdfast-unattended`
+restricts `Unattended-Upgrade::Allowed-Origins` to the
+`${distro_id} ${distro_codename}-security` origin only: Debian security
+patches install automatically (critical CVEs within 7 days, high within 30 —
+the signed-off patch SLA), and everything else waits for the user. Both files
+are written with the same backup-first `write_config` discipline as every
+other config.
 
 ## The DNS chain
 
@@ -267,6 +278,10 @@ curl -s http://127.0.0.1:8787/api/v1/ping
 systemctl --no-pager status unbound AdGuardHome ntopng nextdns tailscaled headscale holdfastbrick-api
 sudo unbound-control status                 # the API uses this same channel
 tailscale status                            # 100.x address = enrolled to the household headscale
+
+# 7. Unattended security updates (security origin only)
+systemctl status unattended-upgrades
+sudo unattended-upgrade --dry-run --debug 2>&1 | grep -E 'Allowed origins|Checking' | head -5
 ```
 
 If a link fails, check its logs: `journalctl -u <unit> -e` (units: `unbound`,

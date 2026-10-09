@@ -20,6 +20,10 @@ ALLOWED_BINARIES = {
     settings.tailscale_bin,
     settings.headscale_bin,
     settings.nextdns_bin,
+    "apt-get",        # update check: -s upgrade simulation only (ALLOWED_ARGV)
+    "apt",            # update check: list --upgradable only (ALLOWED_ARGV)
+    "apt-cache",      # update check: policy lookups only (ALLOWED_ARGV)
+    "dpkg-query",     # update check: installed versions only (ALLOWED_ARGV)
     "systemctl",
     "hostname",
     "uptime",
@@ -34,9 +38,23 @@ ALLOWED_BINARIES = {
 }
 
 # Binaries where only specific subcommands (argv[1]) may run — headscale has
-# mutating verbs (serve, derpmode, ...) the API must never reach.
+# mutating verbs (serve, derpmode, ...) the API must never reach. nextdns
+# gets the same treatment: `nextdns install` runs an interactive
+# configuration wizard that wedges the brick, so it stays forbidden.
 ALLOWED_SUBCOMMANDS: dict[str, set[str]] = {
     "headscale": {"version", "users", "preauthkeys", "nodes"},
+    "nextdns": {"version", "status", "config", "activate", "deactivate", "restart"},
+}
+
+# Binaries restricted to one exact read-only argv shape. A subcommand gate
+# isn't enough here: `apt-get -s install x` would pass a gate keyed on
+# argv[1] == "-s" while simulating a mutation. "<pkg>" marks the single
+# varying argument position.
+ALLOWED_ARGV: dict[str, list[list[str]]] = {
+    "apt-get": [["-s", "upgrade"]],
+    "apt": [["list", "--upgradable"]],
+    "apt-cache": [["policy", "<pkg>"]],
+    "dpkg-query": [["-W", "-f=${Version}", "<pkg>"]],
 }
 
 DEFAULT_TIMEOUT = 20.0
@@ -60,12 +78,25 @@ class CommandError(Exception):
         self.result = result
 
 
+def _argv_shape_allowed(argv: list[str]) -> bool:
+    args = argv[1:]
+    for shape in ALLOWED_ARGV[argv[0]]:
+        if len(args) != len(shape):
+            continue
+        if all(expected == actual or expected == "<pkg>" for expected, actual in zip(shape, args)):
+            return True
+    return False
+
+
 async def run(argv: list[str], timeout: float = DEFAULT_TIMEOUT) -> CommandResult:
     if not argv:
         raise CommandError("empty command")
     binary = argv[0]
     if binary not in ALLOWED_BINARIES:
         raise CommandError(f"binary not allowlisted: {binary}")
+    if binary in ALLOWED_ARGV and not _argv_shape_allowed(argv):
+        requested = " ".join(argv[1:]) or "(no arguments)"
+        raise CommandError(f"arguments not allowlisted for {binary}: {requested}")
     allowed = ALLOWED_SUBCOMMANDS.get(binary)
     if allowed is not None and (len(argv) < 2 or argv[1] not in allowed):
         requested = argv[1] if len(argv) > 1 else "(no subcommand)"

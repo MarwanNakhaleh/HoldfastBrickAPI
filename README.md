@@ -57,6 +57,7 @@ To pair another phone later: `holdfastbrick-pair`
 | Network          | Device network role | /proc + files + nmcli |
 | Household        | Headscale       | `headscale` CLI |
 | Device           | DietPi / OS     | `systemctl`, `vcgencmd`, `free`, `df`, … |
+| Updates          | OS + component freshness | apt + vendor APIs |
 
 All subprocess calls go through an **allowlist** (`holdfastbrick_api/runner.py`) —
 the API can only run the specific binaries above, argv-style with no shell.
@@ -79,6 +80,7 @@ the API can only run the specific binaries above, argv-style with no shell.
 - `POST /network/pin-ip` — pin the brick's current IP as static (standalone, no DHCP takeover); idempotent, tells you when a reboot is needed
 - `GET /network/health` — connection-health verdict (protected / at risk / down): wired link, static IP, DNS serving, upstream DNS, tunnel, plus the fail-open note (router as secondary resolver)
 - `GET|POST /system/{info,reboot}`
+- `GET /updates/check` — pending OS packages (security ones flagged) plus current-vs-latest for every stack component; installs nothing
 - `GET /household/status` — Headscale availability + devices enrolled on the household
 - `POST /household/enroll` `{device_name?}` → `{server_url, auth_key, expires_at}` — single-use join key (24h) for a new phone
 - `GET /household/devices` — enrolled household devices

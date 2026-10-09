@@ -3,8 +3,8 @@
 # device (Debian bookworm or newer, arm64/armhf).
 #
 # Installs and wires: Unbound (DNS-over-TLS upstream), AdGuard Home, Tailscale,
-# Headscale (self-hosted Tailscale control plane), ntopng, NextDNS CLI — then
-# installs the Holdfast API via deploy/install.sh.
+# Headscale (self-hosted Tailscale control plane), ntopng, NextDNS CLI, Debian
+# unattended security updates — then installs the Holdfast API (deploy/install.sh).
 #
 # Resulting DNS chain (default, "forward" mode):
 #   LAN clients :53 -> AdGuard Home -> 127.0.0.1:5335 Unbound -> DoT (Cloudflare/Quad9 :853)
@@ -184,7 +184,7 @@ tailscale_control_url() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 0/9: Preflight — base packages, detect environment"
+stage "Stage 0/10: Preflight — base packages, detect environment"
 # ─────────────────────────────────────────────────────────────────────────────
 apt-get update -qq
 apt-get install -y -qq curl wget ca-certificates gnupg apt-transport-https \
@@ -198,7 +198,7 @@ PI_IP="${PI_IP:-<pi-ip>}"
 note "Default interface: ${DEFAULT_IFACE}, address: ${PI_IP}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 1/9: Free port 53 (systemd-resolved stub listener, if present)"
+stage "Stage 1/10: Free port 53 (systemd-resolved stub listener, if present)"
 # ─────────────────────────────────────────────────────────────────────────────
 if systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 \
    && systemctl is-enabled systemd-resolved >/dev/null 2>&1; then
@@ -215,7 +215,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 2/9: Unbound (apt) on 127.0.0.1:${UNBOUND_PORT}"
+stage "Stage 2/10: Unbound (apt) on 127.0.0.1:${UNBOUND_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 if command -v unbound >/dev/null 2>&1; then
   note "Unbound already installed — skipping install."
@@ -303,7 +303,7 @@ ensure_service unbound "$CONFIG_CHANGED"
 note "Unbound on 127.0.0.1:${UNBOUND_PORT}."
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 3/9: Encrypted DNS — Unbound DoT (remove legacy cloudflared, if any)"
+stage "Stage 3/10: Encrypted DNS — Unbound DoT (remove legacy cloudflared, if any)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Encrypted DNS is provided by Unbound's native DNS-over-TLS forwarding
 # (configured in Stage 2). cloudflared's proxy-dns mode — which earlier
@@ -321,7 +321,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 4/9: AdGuard Home (official installer) — DNS :${ADGUARD_DNS_PORT}, UI :${ADGUARD_UI_PORT}"
+stage "Stage 4/10: AdGuard Home (official installer) — DNS :${ADGUARD_DNS_PORT}, UI :${ADGUARD_UI_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 # AdGuard may already be installed several ways (this script's official
 # installer, DietPi's dietpi-software package, a manual install), each with
@@ -474,7 +474,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 5/9: ntopng on :${NTOPNG_PORT} (packages.ntop.org if reachable, else Debian)"
+stage "Stage 5/10: ntopng on :${NTOPNG_PORT} (packages.ntop.org if reachable, else Debian)"
 # ─────────────────────────────────────────────────────────────────────────────
 NTOP_SOURCE="Debian apt"
 if ! command -v ntopng >/dev/null 2>&1; then
@@ -525,13 +525,30 @@ fi
 note "ntopng (${NTOP_SOURCE}) on http://${PI_IP}:${NTOPNG_PORT}, monitoring ${DEFAULT_IFACE}."
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 6/9: NextDNS CLI on 127.0.0.1:${NEXTDNS_PORT} (installed, NOT activated)"
+stage "Stage 6/10: NextDNS CLI on 127.0.0.1:${NEXTDNS_PORT} (installed, NOT activated)"
 # ─────────────────────────────────────────────────────────────────────────────
-if ! command -v nextdns >/dev/null 2>&1; then
-  # Official installer per https://nextdns.io/install (github.com/nextdns/nextdns).
-  # RUN_COMMAND makes it non-interactive; on Debian it adds repo.nextdns.io.
-  RUN_COMMAND=install sh -c "$(curl -sL https://nextdns.io/install)" </dev/null \
-    || note "WARNING: NextDNS installer failed — install manually later with: sh -c \"\$(curl -sL https://nextdns.io/install)\""
+# Install straight from NextDNS's own apt repo (repo.nextdns.io). The
+# nextdns.io installer script is interactive even under RUN_COMMAND=install —
+# its configure() step loops forever prompting for a profile ID, which wedges
+# headless devices — so it is never used here.
+if command -v nextdns >/dev/null 2>&1 && [ -f /etc/apt/sources.list.d/nextdns.list ]; then
+  note "NextDNS already installed from repo.nextdns.io — skipping repo setup and install."
+else
+  if [ ! -f /etc/apt/keyrings/nextdns.gpg ]; then
+    mkdir -p /etc/apt/keyrings
+    if ! curl -fsSL --max-time 30 https://repo.nextdns.io/nextdns.gpg \
+         -o /etc/apt/keyrings/nextdns.gpg; then
+      wget -q --timeout=30 -O /etc/apt/keyrings/nextdns.gpg \
+        https://repo.nextdns.io/nextdns.gpg
+    fi
+    chmod 0644 /etc/apt/keyrings/nextdns.gpg
+  fi
+  write_config /etc/apt/sources.list.d/nextdns.list <<'EOF'
+deb [signed-by=/etc/apt/keyrings/nextdns.gpg] https://repo.nextdns.io/deb stable main
+EOF
+  apt-get update -qq
+  apt-get install -y -qq nextdns \
+    || note "WARNING: NextDNS install failed — check repo.nextdns.io reachability and re-run."
 fi
 
 if command -v nextdns >/dev/null 2>&1; then
@@ -553,7 +570,7 @@ if command -v nextdns >/dev/null 2>&1; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 7/9: Tailscale (official apt repo)"
+stage "Stage 7/10: Tailscale (official apt repo)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Official repo per https://pkgs.tailscale.com/stable/ (bookworm).
 if command -v tailscale >/dev/null 2>&1; then
@@ -590,7 +607,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 8/9: Headscale — household VPN control plane (official DEB) on :${HEADSCALE_PORT}"
+stage "Stage 8/10: Headscale — household VPN control plane (official DEB) on :${HEADSCALE_PORT}"
 # ─────────────────────────────────────────────────────────────────────────────
 # Self-hosted Tailscale control plane: family phones run the official
 # Tailscale apps pointed at the brick. TLS terminates on headscale itself with
@@ -916,7 +933,43 @@ EOF
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-stage "Stage 9/9: Holdfast API (deploy/install.sh)"
+stage "Stage 9/10: Unattended security updates (Debian) — security origin only"
+# ─────────────────────────────────────────────────────────────────────────────
+# Patch SLA (docs/requirements-home-server-v1.md): critical CVEs patched within
+# 7 days, high within 30. The -security origin installs on its own daily;
+# every other origin waits for the user — no surprise breakage.
+# Debian-like = debian in os-release ID/ID_LIKE (Raspberry Pi OS) or apt+dpkg
+# present (DietPi sets ID=dietpi but is Debian underneath).
+OS_IDS="$(. /etc/os-release 2>/dev/null && echo "${ID:-} ${ID_LIKE:-}" || echo "")"
+DEBIAN_LIKE=0
+case " ${OS_IDS} " in *" debian "*) DEBIAN_LIKE=1 ;; esac
+if [ "$DEBIAN_LIKE" -eq 0 ] && command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then
+  DEBIAN_LIKE=1
+fi
+if [ "$DEBIAN_LIKE" -eq 1 ]; then
+  apt-get install -y -qq unattended-upgrades
+  write_config /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+  write_config /etc/apt/apt.conf.d/50holdfast-unattended <<'EOF'
+// Installed by Holdfast provision.sh — security patches apply automatically;
+// every other origin waits for the user.
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id} ${distro_codename}-security";
+};
+EOF
+  systemctl enable unattended-upgrades >/dev/null 2>&1 || true
+  note "Debian security updates now install daily (other upgrades stay manual)."
+  note "Verify: systemctl status unattended-upgrades"
+  note "        unattended-upgrade --dry-run   (what the next sweep would do)"
+else
+  note "WARNING: base is not Debian-like (${OS_IDS:-/etc/os-release unreadable}) —"
+  note "         skipping unattended security updates; OS patches stay manual."
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+stage "Stage 10/10: Holdfast API (deploy/install.sh)"
 # ─────────────────────────────────────────────────────────────────────────────
 bash "${REPO_DIR}/deploy/install.sh"
 
@@ -1013,6 +1066,7 @@ cat <<EOF
     ntopng           http://${PI_IP}:${NTOPNG_PORT}
     Headscale        ${HS_SERVER_URL}  ${HS_SUMMARY}
     Tailscale        $( [ "$TAILSCALE_PENDING" -eq 1 ] && echo "LOGIN PENDING — run: sudo tailscale up" || echo "up ($(tailscale ip -4 2>/dev/null | head -1))" )
+    OS security      unattended-upgrades, ${CODENAME}-security origin only (daily)
     Holdfast API http://${PI_IP}:${API_PORT}  (pairing code printed above)
 
   Still to do (manual):
